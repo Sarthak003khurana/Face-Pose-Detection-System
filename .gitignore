@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Output videos / recordings
+*.avi
+*.mp4
+video_out.avi
+
+# OS generated files
+.DS_Store
+Thumbs.db
+*.swp
+*~
