@@ -326,10 +326,15 @@ class ShapeShiftRacerGame:
         self.screen.blit(dist_txt, (35, 65))
         self.screen.blit(speed_txt, (35, 90))
 
-        # Lives / Hearts
-        hearts = "♥ " * self.lives + "♡ " * max(0, 3 - self.lives)
-        heart_txt = self.font_hud.render(f"{hearts.strip()}", True, (255, 50, 80))
-        self.screen.blit(heart_txt, (180, 30))
+        # Lives / Vector Hearts (Impact font lacks Unicode heart glyph)
+        for i in range(3):
+            hx = 200 + i * 24
+            hy = 40
+            filled = i < self.lives
+            col = (255, 50, 80) if filled else (70, 50, 65)
+            pygame.draw.circle(self.screen, col, (hx - 4, hy - 2), 5)
+            pygame.draw.circle(self.screen, col, (hx + 4, hy - 2), 5)
+            pygame.draw.polygon(self.screen, col, [(hx - 9, hy), (hx + 9, hy), (hx, hy + 10)])
 
         # Bottom-Center Morph Shape Indicator
         shape_cfg = CAR_SHAPES[self.car.current_shape_key]

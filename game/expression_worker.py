@@ -18,9 +18,9 @@ from game.config import (
 
 class SCRFDDetector:
     """Lightweight wrapper for SCRFD ONNX face detector using OpenCV DNN."""
-    def __init__(self, onnx_path, conf_thresh=0.45, nms_thresh=0.45):
-        self.inp_w = 640
-        self.inp_h = 640
+    def __init__(self, onnx_path, conf_thresh=0.35, nms_thresh=0.45):
+        self.inp_w = 320
+        self.inp_h = 320
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
         self.net = cv2.dnn.readNet(onnx_path)
@@ -75,17 +75,32 @@ class SCRFDDetector:
         self.net.setInput(blob)
         outs = self.net.forward(self.net.getUnconnectedOutLayersNames())
 
+        # Group outputs by (num_anchors, last_dim) so ordering is always exact
+        # SCRFD outputs 3 score tensors (..., 1), 3 bbox tensors (..., 4), 3 kps tensors (..., 10)
+        by_shape = {}
+        for out in outs:
+            arr = out[0] if out.ndim == 3 else out
+            by_shape[(arr.shape[0], arr.shape[-1])] = arr
+
         scores_list = []
         bboxes_list = []
         kpss_list = []
 
-        for idx, stride in enumerate(self.feat_strides):
-            scores = outs[idx * self.fmc][0]
-            bbox_preds = outs[idx * self.fmc + 1][0] * stride
-            kps_preds = outs[idx * self.fmc + 2][0] * stride
-
+        for stride in self.feat_strides:
             h = blob.shape[2] // stride
             w = blob.shape[3] // stride
+            expected_n = h * w * self.num_anchors
+
+            scores = by_shape.get((expected_n, 1))
+            bbox_raw = by_shape.get((expected_n, 4))
+            kps_raw = by_shape.get((expected_n, 10))
+            if scores is None or bbox_raw is None or kps_raw is None:
+                continue
+
+            scores = scores.reshape(-1)
+            bbox_preds = bbox_raw * stride
+            kps_preds = kps_raw * stride
+
             anchor_centers = np.stack(
                 np.mgrid[:h, :w][::-1], axis=-1
             ).astype(np.float32)
@@ -93,27 +108,26 @@ class SCRFDDetector:
             if self.num_anchors > 1:
                 anchor_centers = np.repeat(anchor_centers, self.num_anchors, axis=0)
 
-            bboxes = self.distance2bbox(anchor_centers, bbox_preds)
-            kpss = self.distance2kps(anchor_centers, kps_preds)
-            kpss = kpss.reshape((kpss.shape[0], -1, 2))
-
-            valid_len = min(len(scores), len(bboxes), len(kpss))
-            scores = scores[:valid_len]
-            bboxes = bboxes[:valid_len]
-            kpss = kpss[:valid_len]
-
             pos_inds = np.where(scores >= self.conf_thresh)[0]
-            scores_list.append(scores[pos_inds])
-            bboxes_list.append(bboxes[pos_inds])
-            kpss_list.append(kpss[pos_inds])
+            if len(pos_inds) == 0:
+                continue
 
-        if not scores_list or all(len(s) == 0 for s in scores_list):
+            bboxes = self.distance2bbox(anchor_centers[pos_inds], bbox_preds[pos_inds])
+            kpss = self.distance2kps(anchor_centers[pos_inds], kps_preds[pos_inds])
+            kpss = kpss.reshape((-1, 5, 2))
+
+            scores_list.append(scores[pos_inds])
+            bboxes_list.append(bboxes)
+            kpss_list.append(kpss)
+
+        if not scores_list:
             return np.array([]), np.array([])
 
         scores = np.concatenate(scores_list)
         bboxes = np.concatenate(bboxes_list)
         kpss = np.concatenate(kpss_list)
 
+        # Convert [x1, y1, x2, y2] -> [x, y, w, h] in original image coordinates
         bboxes[:, 2:4] = bboxes[:, 2:4] - bboxes[:, 0:2]
         bboxes /= scale
         kpss /= scale
@@ -158,8 +172,8 @@ class ExpressionWorker:
         self.is_calibrating = False
         self.calibration_samples = []
         self.calibration_target_count = 40  # ~1.5-2 seconds of frames
-        self.baseline_smile = 0.82
-        self.baseline_open = 0.70
+        self.baseline_smile = 0.72
+        self.baseline_open = 0.54
         self.baseline_yaw = 0.0
         self.baseline_roll = 0.0
 
@@ -310,22 +324,32 @@ class ExpressionWorker:
                         print(f"[ExpressionWorker] Calibrated! Smile: {self.baseline_smile:.2f}, Open: {self.baseline_open:.2f}", flush=True)
 
                 # Normalized scores
+                # Smile: mouth widens significantly relative to eyes
                 delta_smile = smile_ratio - self.baseline_smile
-                smile_metric = float(np.clip(delta_smile / max(self.baseline_smile * 0.16, 0.05), 0.0, 1.0))
+                smile_metric = float(np.clip(delta_smile / max(self.baseline_smile * 0.14, 0.05), 0.0, 1.0))
 
-                delta_open = open_ratio - self.baseline_open
-                open_metric = float(np.clip(delta_open / max(self.baseline_open * 0.22, 0.05), 0.0, 1.0))
+                # O-Mouth / Open: mouth narrows (pucker/O-shape) and/or drops lower from nose
+                delta_open_y = open_ratio - self.baseline_open
+                delta_pucker = self.baseline_smile - smile_ratio
+                open_from_drop = float(np.clip(delta_open_y / max(self.baseline_open * 0.18, 0.05), 0.0, 1.0))
+                open_from_pucker = float(np.clip(delta_pucker / max(self.baseline_smile * 0.12, 0.05), 0.0, 1.0))
+                open_metric = float(np.clip(
+                    max(open_from_drop, open_from_pucker, 0.65 * open_from_drop + 0.65 * open_from_pucker),
+                    0.0, 1.0
+                ))
 
-                # Steering mapping from head tilt and yaw
+                # Steering mapping from head tilt and yaw (with center deadzone for stability)
                 diff_yaw = yaw_ratio - self.baseline_yaw
                 diff_roll = (roll_deg - self.baseline_roll) / 25.0
-                raw_steer = (diff_yaw * 2.2 + diff_roll * 0.8)
+                raw_steer = (diff_yaw * 1.5 + diff_roll * 0.6)
+                if abs(raw_steer) < 0.12:
+                    raw_steer = 0.0
                 target_steer = float(np.clip(raw_steer, -1.0, 1.0))
 
                 # Shape classification
-                if smile_metric > 0.58:
+                if smile_metric > 0.52 and smile_metric >= open_metric:
                     target_shape = "FLAT"
-                elif open_metric > 0.58:
+                elif open_metric > 0.52:
                     target_shape = "NARROW"
                 else:
                     target_shape = "NORMAL"
