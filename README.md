@@ -1,68 +1,107 @@
-# Face Pose Detection System
+# Face Pose & Expression Detection System
 
-A real-time head pose estimation and facial expression (smile) detection system based on 2D face detectors.
-
-Estimates 3D head orientation (**Roll**, **Pitch**, and **Yaw**) and detects facial smiles in real time from a live webcam feed or video file using lightweight, fast geometric formulas applied to 5 facial landmarks (eyes, nose, and mouth corners).
+A real-time computer vision system combining head pose estimation (Roll, Pitch, Yaw), facial expression recognition (Smile & Mouth-Open), and an interactive game: **Shape-Shift Racer**!
 
 ---
 
-## Features
+## 🎮 Featured Game: Shape-Shift Racer
 
-- **Head Pose Estimation**:
-  - **Method 1 (Pixel Ratio Heuristics)**: Fast estimation based on relative landmark distances.
-  - **Method 2 (Angular Degrees)**: Roll-normalized angles in degrees ($-90^\circ$ to $+90^\circ$) calibrated according to face image quality standards.
-- **Smile Detection**: Expression classification based on the mouth-to-interpupillary width ratio.
-- **Framing & Centering Diagnostics**: Automatic face selection (closest to frame center) and face framing validation.
-- **Multiple Face Detector Backends**:
-  - **MTCNN**: Multi-task Cascaded CNN detector with TensorFlow.
-  - **RetinaFace**: MobileNetV2-backed RetinaFace model (SavedModel & ONNX).
-  - **SCRFD**: High-efficiency ONNX face detector running via OpenCV DNN (`500m`, `2.5g`, `10g`).
+An interactive 2.5D arcade game where **your face controls the car**:
+- **Smile Big** $\rightarrow$ Car morphs into an ultra-low **FLAT** shape to slide underneath low-hanging barriers.
+- **Open Mouth ("O" / Surprise)** $\rightarrow$ Car morphs into a tall **NARROW** blade to squeeze through tight vertical pillar slits.
+- **Neutral Face** $\rightarrow$ Standard balanced **CRUISER** shape.
+- **Head Turn / Tilt (Yaw & Roll)** $\rightarrow$ Steers the vehicle left $\leftrightarrow$ right across lanes to dodge solid road blocks.
+
+```
+       [Webcam Video] ──> [SCRFD Face & Landmark Detector]
+                                    │
+                  ┌─────────────────┴─────────────────┐
+                  ▼                                   ▼
+         [Head Tilt / Turn]                  [Facial Expressions]
+                  │                                   │
+                  ▼                                   ▼
+         Steers Car Left/Right           Morphs Shape (Flat / Narrow)
+                  │                                   │
+                  └─────────────────┬─────────────────┘
+                                    ▼
+                      [Pygame 60 FPS Game Loop]
+                      ├── 2.5D Perspective Road
+                      ├── Procedural Sound Effects
+                      ├── Approaching Obstacles & Gaps
+                      └── Live Webcam PiP Overlay
+```
+
+### Launch the Game:
+```bash
+python run_game.py
+```
+
+*Note: Keyboard controls (`A/D` or Arrows to steer, `Down` to flatten, `Up` to narrow, `Space` to start/pause, `C` to recalibrate) are always active as backup.*
 
 ---
 
-## Directory Structure
+## 🔬 Core Pose & Expression Estimation
+
+The repository also includes standalone real-time research and benchmarking scripts:
+1. **Pose Detection**:
+   - **Method 1 (Pixel Ratio Heuristics)**: Fast orientation tracking based on relative landmark positions.
+   - **Method 2 (Angular Degrees)**: Roll-normalized angles ($-90^\circ$ to $+90^\circ$) calibrated according to NIST face quality assessment guidelines.
+2. **Smile Detection**: Mouth-width-to-interpupillary distance ratio analysis.
+3. **Framing & Quality Diagnostics**: Centering check and aspect-ratio validation.
+
+### Supported Face Detectors:
+| Detector | Script | Framework |
+| :--- | :--- | :--- |
+| **SCRFD** | `Face_Pose/pose_detection_scrfd.py` | OpenCV DNN + ONNX (`500m`, `2.5g`, `10g`) |
+| **RetinaFace** | `Face_Pose/pose_detection_retinaface.py` | TensorFlow SavedModel & ONNX |
+| **MTCNN** | `Face_Pose/pose_detection_mtcnn.py` | Pure Python + TensorFlow |
+
+---
+
+## 📁 Repository Structure
 
 ```text
 Face-Pose-Detection-System/
-├── README.md
-├── .gitignore
-└── Face_Pose/
+├── run_game.py                 # Main game executable
+├── requirements.txt            # Dependencies (pygame, opencv-python, numpy)
+├── README.md                   # Project documentation
+├── .gitignore                  # Git rules
+├── game/                       # Shape-Shift Racer game engine
+│   ├── config.py               # Constants, speeds, and thresholds
+│   ├── expression_worker.py    # Threaded camera & face classifier
+│   ├── car.py                  # Morphing vehicle & vector tweening
+│   ├── obstacles.py            # Low beams, pillars, roadblocks, and hitboxes
+│   ├── road.py                 # 2.5D retro perspective road rendering
+│   └── sound_manager.py        # Procedural in-memory 8-bit sound effects
+└── Face_Pose/                  # Standalone detection demos & models
     ├── README.md
-    ├── LICENSE.md
-    ├── pose_demo.png
-    ├── pose_detection_mtcnn.py
-    ├── pose_detection_retinaface.py
     ├── pose_detection_scrfd.py
-    ├── models/
-    │   ├── scrfd_500m_kps.onnx
-    │   ├── scrfd_2.5g_kps.onnx
-    │   ├── scrfd_10g_kps.onnx
-    │   ├── tf-serving-retinaface_mbv2.onnx
-    │   └── tf_retinaface_mbv2/
-    └── mtcnn/
+    ├── pose_detection_retinaface.py
+    ├── pose_detection_mtcnn.py
+    ├── models/                 # Pretrained ONNX & SavedModel weights
+    └── mtcnn/                  # MTCNN network implementation
 ```
 
 ---
 
-## Quickstart
+## 🚀 Installation & Quickstart
 
-Navigate to the `Face_Pose` directory:
+1. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-cd Face_Pose
-```
+2. **Play the Game**:
+   ```bash
+   python run_game.py
+   ```
 
-Run any of the detection scripts:
-
-```bash
-# Using MTCNN
-python pose_detection_mtcnn.py
-
-# Using RetinaFace
-python pose_detection_retinaface.py
-
-# Using SCRFD
-python pose_detection_scrfd.py
-```
-
-Press `q` to exit the live video feed.
+3. **Run Standalone Face Pose Demos**:
+   ```bash
+   cd Face_Pose
+   python pose_detection_scrfd.py
+   # or
+   python pose_detection_retinaface.py
+   # or
+   python pose_detection_mtcnn.py
+   ```
