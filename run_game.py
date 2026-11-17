@@ -9,10 +9,15 @@ Controls:
   - Keyboard Fallback    -> A/D or Arrows to Steer, Down to Flatten, Up to Narrow, Space to Start.
 """
 
+import os
 import sys
 import time
 import random
+import platform
+import ctypes
 import pygame
+
+os.environ["SDL_VIDEO_CENTERED"] = "1"
 
 from game.config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS, TITLE,
@@ -59,14 +64,11 @@ class ShapeShiftRacerGame:
         pygame.font.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption(TITLE)
+        self._bring_window_to_front()
         self.clock = pygame.time.Clock()
 
         # Audio Manager
         self.sound_mgr = SoundManager()
-
-        # Vision background thread
-        self.vision = ExpressionWorker(camera_id=0)
-        self.vision.start()
 
         # Game Engines
         self.road = RoadRenderer()
@@ -93,6 +95,41 @@ class ShapeShiftRacerGame:
         self.font_hud = pygame.font.SysFont("Impact", 24)
         self.font_body = pygame.font.SysFont("Arial", 18, bold=True)
 
+        # Fallback PiP surface created safely on main thread
+        self.fallback_pip_surface = self._create_fallback_pip_surface()
+
+        # Vision background thread (started after display & fonts are initialized)
+        self.vision = ExpressionWorker(camera_id=0)
+        self.vision.start()
+
+    def _bring_window_to_front(self):
+        """Ensures the Pygame window is visible and focused on Windows."""
+        if platform.system() == "Windows":
+            try:
+                hwnd = pygame.display.get_wm_info().get("window")
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 5)   # SW_SHOW
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+    def _create_fallback_pip_surface(self):
+        """Creates a fallback HUD surface on the main thread when camera is initializing/unavailable."""
+        surf = pygame.Surface((PIP_WIDTH, PIP_HEIGHT))
+        surf.fill((25, 20, 38))
+        f = pygame.font.SysFont("Arial", 14, bold=True)
+        lines = [
+            ("Camera Initializing / Standby", (255, 220, 80)),
+            ("Keyboard Controls Active:", (200, 220, 255)),
+            ("A / D  : Steer Left / Right", (0, 230, 255)),
+            ("DOWN   : Morph FLAT (Smile)", (255, 80, 180)),
+            ("UP     : Morph NARROW (O-Mouth)", (80, 255, 140)),
+        ]
+        for idx, (text, color) in enumerate(lines):
+            surf.blit(f.render(text, True, color), (14, 22 + idx * 30))
+        return surf
+
     def run(self):
         """Main game loop running at 60 FPS."""
         running = True
@@ -114,6 +151,9 @@ class ShapeShiftRacerGame:
                             self.state = "CALIBRATING"
                             self.calibration_timer = 3.0
                             self.vision.trigger_calibration()
+                        elif self.state == "CALIBRATING":
+                            self._reset_game()
+                            self.state = "PLAYING"
                         elif self.state == "GAMEOVER":
                             self._reset_game()
                             self.state = "PLAYING"
@@ -167,8 +207,7 @@ class ShapeShiftRacerGame:
         self.car.update(self.road, dt)
         self.calibration_timer -= dt
 
-        vision_state = self.vision.get_state()
-        if self.calibration_timer <= 0 and not vision_state["is_calibrating"]:
+        if self.calibration_timer <= 0:
             self.sound_mgr.play("calibrated")
             self._reset_game()
             self.state = "PLAYING"
@@ -309,14 +348,17 @@ class ShapeShiftRacerGame:
         morph_title = self.font_sub.render(f"MORPH: {shape_name}", True, shape_col)
         self.screen.blit(morph_title, (badge_x + (badge_w - morph_title.get_width()) // 2, badge_y + 8))
 
-        # Top-Right Webcam Picture-in-Picture
+        # Top-Right Webcam Picture-in-Picture (converted safely on main thread)
         vision_state = self.vision.get_state()
-        pip_surf = vision_state["pip_surface"]
-        if pip_surf:
-            # Draw frame border
-            pip_border = pygame.Rect(PIP_X - 2, PIP_Y - 2, PIP_WIDTH + 4, PIP_HEIGHT + 4)
-            pygame.draw.rect(self.screen, (0, 255, 255), pip_border, width=2, border_radius=4)
-            self.screen.blit(pip_surf, (PIP_X, PIP_Y))
+        rgb_bytes = vision_state["pip_rgb_bytes"]
+        if rgb_bytes is not None:
+            pip_surf = pygame.image.frombuffer(rgb_bytes, (PIP_WIDTH, PIP_HEIGHT), "RGB")
+        else:
+            pip_surf = self.fallback_pip_surface
+
+        pip_border = pygame.Rect(PIP_X - 2, PIP_Y - 2, PIP_WIDTH + 4, PIP_HEIGHT + 4)
+        pygame.draw.rect(self.screen, (0, 255, 255), pip_border, width=2, border_radius=4)
+        self.screen.blit(pip_surf, (PIP_X, PIP_Y))
 
     def _render_start_overlay(self):
         """Renders intro banner and instructions."""

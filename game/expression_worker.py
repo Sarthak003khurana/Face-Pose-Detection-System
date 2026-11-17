@@ -1,18 +1,18 @@
 """
 Asynchronous Camera & Facial Expression / Head Pose Worker.
 Runs SCRFD face detection in a background thread to prevent game stutter.
+Thread-safe: performs NO Pygame calls in the background thread (returns raw RGB frames).
 """
 
 import threading
 import time
 import os
+import platform
 import cv2
 import numpy as np
-import pygame
 
 from game.config import (
-    CAR_SHAPES, PIP_WIDTH, PIP_HEIGHT,
-    DEFAULT_SMILE_MULTIPLIER, DEFAULT_OPEN_MOUTH_MULTIPLIER
+    PIP_WIDTH, PIP_HEIGHT,
 )
 
 
@@ -33,7 +33,7 @@ class SCRFDDetector:
         scale = min(self.inp_h / h, self.inp_w / w)
         new_w, new_h = int(w * scale), int(h * scale)
         resized = cv2.resize(img, (new_w, new_h))
-        
+
         pad_w = self.inp_w - new_w
         pad_h = self.inp_h - new_h
         padded = cv2.copyMakeBorder(
@@ -140,10 +140,11 @@ class ExpressionWorker:
         self.thread = None
         self.camera_id = camera_id
         self.model_path = model_path
-        
+
         # Detector instance
         self.detector = None
         self.cap = None
+        self.camera_available = False
 
         # Game state outputs
         self.steer_x = 0.0          # -1.0 (far left) to +1.0 (far right)
@@ -152,11 +153,11 @@ class ExpressionWorker:
         self.smile_intensity = 0.0   # 0.0 to 1.0
         self.open_intensity = 0.0    # 0.0 to 1.0
         self.fps = 0.0
-        
+
         # Calibration state
-        self.is_calibrating = True
+        self.is_calibrating = False
         self.calibration_samples = []
-        self.calibration_target_count = 60  # ~2-3 seconds of frames
+        self.calibration_target_count = 40  # ~1.5-2 seconds of frames
         self.baseline_smile = 0.82
         self.baseline_open = 0.70
         self.baseline_yaw = 0.0
@@ -167,8 +168,8 @@ class ExpressionWorker:
         self._smooth_smile = 0.0
         self._smooth_open = 0.0
 
-        # Picture-in-Picture display surface
-        self.pip_surface = None
+        # Raw RGB bytes for PiP display (converted to Surface on main thread)
+        self.pip_rgb_bytes = None
 
     def start(self):
         """Starts the worker thread."""
@@ -190,26 +191,42 @@ class ExpressionWorker:
             self.is_calibrating = True
             self.calibration_samples.clear()
 
+    def _open_camera(self):
+        """Opens webcam quickly using DirectShow on Windows with fallback."""
+        if platform.system() == "Windows":
+            cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                return cap
+            cap.release()
+        return cv2.VideoCapture(self.camera_id)
+
     def _run_loop(self):
         """Continuous camera capture & detection loop."""
         try:
             if os.path.exists(self.model_path):
                 self.detector = SCRFDDetector(self.model_path)
             else:
-                print(f"[ExpressionWorker] Model not found at {self.model_path}")
+                print(f"[ExpressionWorker] Model not found at {self.model_path}", flush=True)
         except Exception as e:
-            print(f"[ExpressionWorker] Failed to load detector: {e}")
+            print(f"[ExpressionWorker] Failed to load detector: {e}", flush=True)
             self.detector = None
 
-        self.cap = cv2.VideoCapture(self.camera_id)
-        if not self.cap.isOpened():
-            print(f"[ExpressionWorker] Camera {self.camera_id} could not be opened. Using keyboard fallback.")
-            self._generate_fallback_surface()
+        self.cap = self._open_camera()
+        if not self.cap or not self.cap.isOpened():
+            print(f"[ExpressionWorker] Camera {self.camera_id} unavailable. Using keyboard fallback.", flush=True)
+            with self.lock:
+                self.camera_available = False
+                self.is_calibrating = False
+        else:
+            with self.lock:
+                self.camera_available = True
 
         last_time = time.time()
 
         while self.running:
             if not self.cap or not self.cap.isOpened() or self.detector is None:
+                with self.lock:
+                    self.is_calibrating = False
                 time.sleep(0.05)
                 continue
 
@@ -278,7 +295,9 @@ class ExpressionWorker:
                 open_ratio = dy_n2m / dx_eyes
 
                 # Calibration accumulation
-                if self.is_calibrating:
+                with self.lock:
+                    calibrating = self.is_calibrating
+                if calibrating:
                     self.calibration_samples.append((smile_ratio, open_ratio, yaw_ratio, roll_deg))
                     if len(self.calibration_samples) >= self.calibration_target_count:
                         arr = np.array(self.calibration_samples)
@@ -286,15 +305,16 @@ class ExpressionWorker:
                         self.baseline_open = float(np.median(arr[:, 1]))
                         self.baseline_yaw = float(np.median(arr[:, 2]))
                         self.baseline_roll = float(np.median(arr[:, 3]))
-                        self.is_calibrating = False
-                        print(f"[ExpressionWorker] Calibrated! Baseline Smile: {self.baseline_smile:.2f}, Open: {self.baseline_open:.2f}")
+                        with self.lock:
+                            self.is_calibrating = False
+                        print(f"[ExpressionWorker] Calibrated! Smile: {self.baseline_smile:.2f}, Open: {self.baseline_open:.2f}", flush=True)
 
                 # Normalized scores
                 delta_smile = smile_ratio - self.baseline_smile
-                smile_metric = np.clip(delta_smile / (self.baseline_smile * 0.16), 0.0, 1.0)
+                smile_metric = float(np.clip(delta_smile / max(self.baseline_smile * 0.16, 0.05), 0.0, 1.0))
 
                 delta_open = open_ratio - self.baseline_open
-                open_metric = np.clip(delta_open / (self.baseline_open * 0.22), 0.0, 1.0)
+                open_metric = float(np.clip(delta_open / max(self.baseline_open * 0.22, 0.05), 0.0, 1.0))
 
                 # Steering mapping from head tilt and yaw
                 diff_yaw = yaw_ratio - self.baseline_yaw
@@ -302,7 +322,7 @@ class ExpressionWorker:
                 raw_steer = (diff_yaw * 2.2 + diff_roll * 0.8)
                 target_steer = float(np.clip(raw_steer, -1.0, 1.0))
 
-                # Shape classification (Smile takes priority or high open)
+                # Shape classification
                 if smile_metric > 0.58:
                     target_shape = "FLAT"
                 elif open_metric > 0.58:
@@ -311,11 +331,11 @@ class ExpressionWorker:
                     target_shape = "NORMAL"
 
                 # Draw telemetry on PiP frame
-                self._draw_pip_telemetry(frame, bbox, pts, smile_metric, open_metric, target_shape, target_steer)
+                self._draw_pip_telemetry(frame, bbox, pts, smile_metric, open_metric, target_shape)
             else:
-                cv2.putText(frame, "NO FACE DETECTED", (30, 60),
+                cv2.putText(frame, "NO FACE DETECTED", (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                cv2.putText(frame, "Using Keyboard [A/D or Arrows]", (30, 100),
+                cv2.putText(frame, "Keys: A/D Steer, Down/Up Morph", (20, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
             # Apply temporal smoothing
@@ -324,10 +344,10 @@ class ExpressionWorker:
             self._smooth_smile += (smile_metric - self._smooth_smile) * alpha
             self._smooth_open += (open_metric - self._smooth_open) * alpha
 
-            # Convert PiP frame to Pygame Surface
+            # Resize and convert to RGB raw bytes (no Pygame calls in thread!)
             pip_img = cv2.resize(frame, (PIP_WIDTH, PIP_HEIGHT))
             pip_rgb = cv2.cvtColor(pip_img, cv2.COLOR_BGR2RGB)
-            surface = pygame.image.frombuffer(pip_rgb.tobytes(), (PIP_WIDTH, PIP_HEIGHT), "RGB")
+            rgb_bytes = pip_rgb.tobytes()
 
             # Update shared state
             with self.lock:
@@ -337,67 +357,42 @@ class ExpressionWorker:
                 self.smile_intensity = self._smooth_smile
                 self.open_intensity = self._smooth_open
                 self.fps = current_fps
-                self.pip_surface = surface
+                self.pip_rgb_bytes = rgb_bytes
 
         # Cleanup
         if self.cap:
             self.cap.release()
 
-    def _draw_pip_telemetry(self, frame, bbox, pts, smile_val, open_val, shape, steer):
+    def _draw_pip_telemetry(self, frame, bbox, pts, smile_val, open_val, shape):
         """Draws visual HUD landmarks and telemetry meters directly on camera frame."""
-        # Face bounding box
         cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), (0, 255, 255), 1)
-        
-        # 5 Landmarks
+
         for i, pt in enumerate(pts):
             color = (0, 255, 0) if i < 2 else ((0, 200, 255) if i == 2 else (255, 0, 200))
             cv2.circle(frame, (int(pt[0]), int(pt[1])), 4, color, -1)
 
-        # Connect eyes & mouth lines
         cv2.line(frame, (int(pts[0][0]), int(pts[0][1])), (int(pts[1][0]), int(pts[1][1])), (0, 255, 0), 2)
         cv2.line(frame, (int(pts[3][0]), int(pts[3][1])), (int(pts[4][0]), int(pts[4][1])), (255, 0, 200), 2)
 
-        # Shape status badge
         color_map = {
-            "NORMAL": (0, 255, 255),
-            "FLAT": (255, 0, 128),
-            "NARROW": (0, 255, 140)
+            "NORMAL": (255, 210, 0),
+            "FLAT": (128, 0, 255),
+            "NARROW": (140, 255, 0)
         }
         bcolor = color_map.get(shape, (255, 255, 255))
-        cv2.rectangle(frame, (10, 10), (220, 42), (20, 20, 20), -1)
+        cv2.rectangle(frame, (10, 10), (240, 42), (20, 20, 20), -1)
         cv2.putText(frame, f"MORPH: {shape}", (16, 34),
                     cv2.FONT_HERSHEY_DUPLEX, 0.7, bcolor, 2)
 
-        # Expression Meters
-        # Smile Meter
         cv2.putText(frame, f"Smile: {int(smile_val * 100)}%", (12, 65),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.rectangle(frame, (110, 54), (230, 68), (40, 40, 40), -1)
-        cv2.rectangle(frame, (110, 54), (110 + int(120 * smile_val), 68), (255, 0, 128), -1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.rectangle(frame, (125, 52), (255, 68), (40, 40, 40), -1)
+        cv2.rectangle(frame, (125, 52), (125 + int(130 * smile_val), 68), (128, 0, 255), -1)
 
-        # Mouth Open Meter
-        cv2.putText(frame, f"Open:  {int(open_val * 100)}%", (12, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.rectangle(frame, (110, 74), (230, 88), (40, 40, 40), -1)
-        cv2.rectangle(frame, (110, 74), (110 + int(120 * open_val), 88), (0, 255, 140), -1)
-
-    def _generate_fallback_surface(self):
-        """Creates a dummy HUD surface when no webcam is present."""
-        surf = pygame.Surface((PIP_WIDTH, PIP_HEIGHT))
-        surf.fill((25, 25, 35))
-        font = pygame.font.SysFont("Arial", 14)
-        txt1 = font.render("No Webcam Detected", True, (255, 100, 100))
-        txt2 = font.render("Keyboard Controls Active:", True, (200, 200, 200))
-        txt3 = font.render("A/D : Steer Left / Right", True, (100, 220, 255))
-        txt4 = font.render("Down : Morph FLAT (Smile)", True, (255, 100, 200))
-        txt5 = font.render("Up : Morph NARROW (O-Mouth)", True, (100, 255, 150))
-        surf.blit(txt1, (20, 20))
-        surf.blit(txt2, (20, 50))
-        surf.blit(txt3, (20, 80))
-        surf.blit(txt4, (20, 110))
-        surf.blit(txt5, (20, 140))
-        with self.lock:
-            self.pip_surface = surf
+        cv2.putText(frame, f"Open:  {int(open_val * 100)}%", (12, 88),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.rectangle(frame, (125, 75), (255, 91), (40, 40, 40), -1)
+        cv2.rectangle(frame, (125, 75), (125 + int(130 * open_val), 91), (140, 255, 0), -1)
 
     def get_state(self):
         """Returns the thread-safe copy of latest vision outputs."""
@@ -406,9 +401,10 @@ class ExpressionWorker:
                 "steer_x": self.steer_x,
                 "shape": self.current_shape,
                 "face_detected": self.face_detected,
+                "camera_available": self.camera_available,
                 "smile_intensity": self.smile_intensity,
                 "open_intensity": self.open_intensity,
                 "is_calibrating": self.is_calibrating,
                 "fps": self.fps,
-                "pip_surface": self.pip_surface
+                "pip_rgb_bytes": self.pip_rgb_bytes
             }
