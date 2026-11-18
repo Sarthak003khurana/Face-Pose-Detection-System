@@ -1,6 +1,6 @@
-# Face Pose & Expression Detection System
+# Shape-Shift Racer
 
-A real-time computer vision system for **3D head pose estimation** (Roll, Pitch, Yaw) and **468-point facial expression recognition** (Smile & Open-Mouth), bundled with **Shape-Shift Racer** — a 60 FPS retro arcade game controlled entirely by your face.
+A real-time computer vision arcade game and **468-point facial expression & 3D head pose engine** where your face steers and morphs a GT sports car in real time.
 
 ---
 
@@ -64,7 +64,7 @@ Includes standalone real-time OpenCV webcam scripts implementing two geometric p
 ## Project Structure
 
 ```text
-Face-Pose-Detection-System/
+Shape-Shift-Racer/
 ├── run_game.py                      # Main entrypoint for Shape-Shift Racer
 ├── play_game.bat                    # One-click Windows launcher (Python 3.11)
 ├── requirements.txt                 # Core Python dependencies
@@ -103,8 +103,8 @@ Face-Pose-Detection-System/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Sarthak003khurana/Face-Pose-Detection-System.git
-   cd Face-Pose-Detection-System
+   git clone https://github.com/Sarthak003khurana/Shape-Shift-Racer.git
+   cd Shape-Shift-Racer
    ```
 
 2. **Create and activate a virtual environment**
