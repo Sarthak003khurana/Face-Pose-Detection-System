@@ -144,8 +144,8 @@ class FaceMesh468:
         fh, fw = frame_bgr.shape[:2]
         x, y, bw, bh = bbox
         cx = x + bw * 0.5
-        cy = y + bh * 0.5
-        side = max(bw, bh) * 1.45
+        cy = y + bh * 0.54  # Slight downward shift keeps dropped jaw/chin inside ROI
+        side = max(bw, bh) * 1.55
 
         x1 = int(cx - side * 0.5)
         y1 = int(cy - side * 0.5)
@@ -217,9 +217,12 @@ class ExpressionWorker:
         self.calibration_target_count = 30  # ~1 second of neutral frames
 
         # Realistic neutral defaults for 468-point FaceMesh
-        self.base_mouth_w_ratio = 0.55
-        self.base_corner_lift = 0.00
-        self.base_mar = 0.055
+        self.base_mouth_w_ratio = 0.62
+        self.base_corner_lift = 0.015
+        self.base_inner_h = 0.018
+        self.base_mar = 0.030
+        self.base_outer_h = 0.220
+        self.base_jaw_h = 0.940
         self.base_yaw = 0.0
         self.base_roll = 0.0
 
@@ -304,26 +307,30 @@ class ExpressionWorker:
         mouth_w = max(float(abs(rx[291] - rx[61])), 1.0)
         mouth_w_ratio = mouth_w / eye_dist
 
-        # 2. True Inner Lip Vertical Opening (average of left, center, right inner lip gaps)
+        # 2. Inner Lip Vertical Opening (left, center, right inner lip pairs)
         gap_center = abs(ry[14] - ry[13])
         gap_left = abs(ry[87] - ry[82])
         gap_right = abs(ry[317] - ry[312])
-        mouth_open_h = float((gap_center + gap_left + gap_right) / 3.0)
+        mouth_open_px = float((gap_center + gap_left + gap_right) / 3.0)
+        inner_h = mouth_open_px / eye_dist
+        mar = mouth_open_px / mouth_w
 
-        # True Mouth Aspect Ratio (MAR): vertical inner lip opening / mouth width
-        mar = mouth_open_h / mouth_w
+        # 3. Outer Lip Vertical Height (upper outer lip 0 to lower outer lip 17)
+        outer_h = float(abs(ry[17] - ry[0]) / eye_dist)
 
-        # 3. Mouth Corner Lift (positive when corners pull UP higher than lip center = smile)
+        # 4. Jaw Drop (nose tip 1 to bottom chin 152 — immune to beard/mustache shadows)
+        jaw_h = float(abs(ry[152] - ry[1]) / eye_dist)
+
+        # 5. Mouth Corner Lift anchored to UPPER lip (13) — NEVER falsely spikes when jaw opens!
         corner_y = (ry[61] + ry[291]) * 0.5
-        lip_center_y = (ry[13] + ry[14]) * 0.5
-        corner_lift = float((lip_center_y - corner_y) / eye_dist)
+        corner_lift = float((ry[13] - corner_y) / eye_dist)
 
-        # 4. Head Yaw from cheek contour (234 = left cheek, 454 = right cheek, 1 = nose tip)
+        # 6. Head Yaw from cheek contour (234 = left cheek, 454 = right cheek, 1 = nose tip)
         dist_l = max(float(rx[1] - rx[234]), 1.0)
         dist_r = max(float(rx[454] - rx[1]), 1.0)
         yaw = (dist_l - dist_r) / (dist_l + dist_r)
 
-        return mouth_w_ratio, corner_lift, mar, yaw, roll_deg
+        return mouth_w_ratio, corner_lift, inner_h, mar, outer_h, jaw_h, yaw, roll_deg
 
     def _run_loop(self):
         # Load Stage 1: SCRFD
@@ -401,25 +408,31 @@ class ExpressionWorker:
                 mesh_pts = self.mesh.predict(frame, bbox) if self.mesh is not None else None
 
                 if mesh_pts is not None:
-                    mouth_w_ratio, corner_lift, mar, yaw, roll_deg = self._extract_mesh_features(mesh_pts)
+                    mouth_w_ratio, corner_lift, inner_h, mar, outer_h, jaw_h, yaw, roll_deg = self._extract_mesh_features(mesh_pts)
 
                     # Accumulate neutral baseline calibration
                     with self.lock:
                         calibrating = self.is_calibrating
                     if calibrating:
-                        self.calibration_samples.append((mouth_w_ratio, corner_lift, mar, yaw, roll_deg))
+                        self.calibration_samples.append((
+                            mouth_w_ratio, corner_lift, inner_h, mar, outer_h, jaw_h, yaw, roll_deg
+                        ))
                         if len(self.calibration_samples) >= self.calibration_target_count:
                             arr = np.array(self.calibration_samples)
                             self.base_mouth_w_ratio = float(np.median(arr[:, 0]))
                             self.base_corner_lift = float(np.median(arr[:, 1]))
-                            self.base_mar = float(np.median(arr[:, 2]))
-                            self.base_yaw = float(np.median(arr[:, 3]))
-                            self.base_roll = float(np.median(arr[:, 4]))
+                            self.base_inner_h = float(np.median(arr[:, 2]))
+                            self.base_mar = float(np.median(arr[:, 3]))
+                            self.base_outer_h = float(np.median(arr[:, 4]))
+                            self.base_jaw_h = float(np.median(arr[:, 5]))
+                            self.base_yaw = float(np.median(arr[:, 6]))
+                            self.base_roll = float(np.median(arr[:, 7]))
                             with self.lock:
                                 self.is_calibrating = False
                             print(
                                 f"[ExpressionWorker] 468-pt Calibrated! "
-                                f"mouth_w={self.base_mouth_w_ratio:.3f}, lift={self.base_corner_lift:.3f}, MAR={self.base_mar:.3f}",
+                                f"w={self.base_mouth_w_ratio:.3f}, inner={self.base_inner_h:.3f}, "
+                                f"outer={self.base_outer_h:.3f}, jaw={self.base_jaw_h:.3f}",
                                 flush=True
                             )
 
@@ -428,21 +441,38 @@ class ExpressionWorker:
                         open_sens = self.open_sensitivity
                         steer_sens = self.steer_sensitivity
 
-                    # 1. Open Mouth ("O") Score via true inner lip MAR
-                    delta_mar = mar - self.base_mar
-                    o_narrow_bonus = max(0.0, (self.base_mouth_w_ratio - mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.18, 0.04))
-                    raw_open = (delta_mar / 0.24) + (0.25 * o_narrow_bonus if delta_mar > 0.08 else 0.0)
-                    open_score = float(np.clip(raw_open * open_sens, 0.0, 1.0))
-
-                    # 2. Smile Score via Mouth Width Expansion + Corner Lift
-                    width_gain = (mouth_w_ratio - self.base_mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.13, 0.04)
-                    lift_gain = (corner_lift - self.base_corner_lift) / 0.042
+                    # 1. Smile Score via Mouth Width Expansion + Upper-Lip-Anchored Corner Lift
+                    width_gain = (mouth_w_ratio - self.base_mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.11, 0.04)
+                    lift_gain = (corner_lift - self.base_corner_lift) / 0.038
                     width_score = float(np.clip(width_gain, 0.0, 1.0))
                     lift_score = float(np.clip(lift_gain, 0.0, 1.0))
 
-                    raw_smile = (0.55 * width_score + 0.45 * lift_score) * smile_sens
-                    if mar > self.base_mar + 0.28 and width_score < 0.35:
-                        raw_smile *= 0.35
+                    # 2. Multi-Signal Open Mouth ("O" / "AH") Score
+                    #    Fuses inner lip gap, MAR, outer lip stretch, jaw drop, and O-pucker
+                    inner_score = float(np.clip((inner_h - self.base_inner_h) / 0.070, 0.0, 1.0))
+                    mar_score = float(np.clip((mar - self.base_mar) / 0.125, 0.0, 1.0))
+                    outer_score = float(np.clip((outer_h - self.base_outer_h) / 0.095, 0.0, 1.0))
+                    jaw_score = float(np.clip((jaw_h - self.base_jaw_h) / 0.105, 0.0, 1.0))
+                    pucker_score = float(np.clip(
+                        (self.base_mouth_w_ratio - mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.14, 0.04),
+                        0.0, 1.0
+                    ))
+
+                    lip_open = 0.40 * inner_score + 0.30 * mar_score + 0.30 * outer_score
+                    raw_open = max(lip_open, 0.65 * lip_open + 0.35 * jaw_score)
+                    if pucker_score > 0.22 and (inner_score > 0.12 or outer_score > 0.15 or jaw_score > 0.20):
+                        raw_open = max(raw_open, 0.55 * lip_open + 0.55 * pucker_score)
+
+                    # Disambiguate big toothy smile vs open mouth
+                    raw_smile = (0.58 * width_score + 0.42 * lift_score) * smile_sens
+                    if width_score > 0.55 and lift_score > 0.35:
+                        # Clearly smiling wide with teeth -> suppress open_score so FLAT wins cleanly
+                        raw_open *= 0.40
+                    elif raw_open > 0.40 and width_score < 0.35:
+                        # Clearly opening mouth -> suppress smile_score so NARROW wins cleanly
+                        raw_smile *= 0.25
+
+                    open_score = float(np.clip(raw_open * open_sens, 0.0, 1.0))
                     smile_score = float(np.clip(raw_smile, 0.0, 1.0))
 
                     # 3. Steering from true cheek-to-nose Yaw + eye Roll (with deadzone)
@@ -453,10 +483,10 @@ class ExpressionWorker:
                         raw_steer = 0.0
                     target_steer = float(np.clip(raw_steer, -1.0, 1.0))
 
-                    # Temporal smoothing (fast response, zero jitter)
-                    self._smooth_steer += (target_steer - self._smooth_steer) * 0.28
-                    self._smooth_smile += (smile_score - self._smooth_smile) * 0.35
-                    self._smooth_open += (open_score - self._smooth_open) * 0.35
+                    # Temporal smoothing (fast, snappy response with zero jitter)
+                    self._smooth_steer += (target_steer - self._smooth_steer) * 0.30
+                    self._smooth_smile += (smile_score - self._smooth_smile) * 0.42
+                    self._smooth_open += (open_score - self._smooth_open) * 0.45
 
                     # Hysteresis state machine (prevents morph flicker)
                     self._update_shape_hysteresis(self._smooth_smile, self._smooth_open)
@@ -495,11 +525,11 @@ class ExpressionWorker:
 
     def _update_shape_hysteresis(self, smile, open_m):
         """
-        Hysteresis thresholds so shapes engage quickly (>0.48) and hold steadily
-        until released (<0.34), prioritizing whichever expression is stronger.
+        Hysteresis thresholds so shapes engage quickly (>0.42) and hold steadily
+        until released (<0.28), prioritizing whichever expression is stronger.
         """
-        enter_thresh = 0.48
-        exit_thresh = 0.34
+        enter_thresh = 0.42
+        exit_thresh = 0.28
 
         if self._active_shape == "FLAT":
             if open_m > enter_thresh and open_m > smile + 0.12:
