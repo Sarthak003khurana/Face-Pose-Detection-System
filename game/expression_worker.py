@@ -269,14 +269,15 @@ class ExpressionWorker:
         self.open_outer_span = 0.095
         self.open_jaw_span = 0.105
 
-        # Velocity-adaptive One-Euro Filters (zero jitter when still, snappy on quick moves!)
-        self._f_steer = OneEuroFilter(min_cutoff=1.4, beta=0.18, d_cutoff=1.0)
+        # Velocity-adaptive One-Euro Filters (rock-steady when still, snappy on intentional moves)
+        self._f_steer = OneEuroFilter(min_cutoff=0.8, beta=0.04, d_cutoff=1.0)
         self._f_smile = OneEuroFilter(min_cutoff=1.8, beta=0.25, d_cutoff=1.0)
         self._f_open = OneEuroFilter(min_cutoff=1.8, beta=0.25, d_cutoff=1.0)
         self._f_brow = OneEuroFilter(min_cutoff=1.6, beta=0.20, d_cutoff=1.0)
-        self._f_yaw = OneEuroFilter(min_cutoff=1.2, beta=0.10, d_cutoff=1.0)
-        self._f_pitch = OneEuroFilter(min_cutoff=1.2, beta=0.10, d_cutoff=1.0)
-        self._f_roll = OneEuroFilter(min_cutoff=1.2, beta=0.10, d_cutoff=1.0)
+        self._f_yaw = OneEuroFilter(min_cutoff=1.0, beta=0.05, d_cutoff=1.0)
+        self._f_pitch = OneEuroFilter(min_cutoff=1.0, beta=0.05, d_cutoff=1.0)
+        self._f_roll = OneEuroFilter(min_cutoff=1.0, beta=0.05, d_cutoff=1.0)
+        self._auto_calibrated_once = False
 
         self._active_shape = "NORMAL"
 
@@ -539,7 +540,7 @@ class ExpressionWorker:
                         yaw_3d = yaw_2d * 35.0
                         pitch_3d = 0.0
 
-                    # 3-Step Calibration Sample Collection
+                    # 3-Step Calibration Sample Collection (auto-zeros on first 10 frames too!)
                     with self.lock:
                         cal_stage = self.calibration_stage
                     if cal_stage in self._cal_samples:
@@ -548,11 +549,15 @@ class ExpressionWorker:
                             brow_h, left_ear, right_ear, yaw_2d, roll_2d, yaw_3d
                         )
                         self._cal_samples[cal_stage].append(sample)
-                        if len(self._cal_samples[cal_stage]) >= self.calibration_target_count:
+                        if cal_stage == "NEUTRAL" and not self._auto_calibrated_once and len(self._cal_samples["NEUTRAL"]) == 10:
+                            self._apply_calibration_samples("NEUTRAL", np.array(self._cal_samples["NEUTRAL"]))
+                            self._auto_calibrated_once = True
+                        elif len(self._cal_samples[cal_stage]) >= self.calibration_target_count:
                             self._apply_calibration_samples(cal_stage, np.array(self._cal_samples[cal_stage]))
-                            if cal_stage == "NEUTRAL":
-                                # Wait for game wizard (or finish if standalone auto-cal)
-                                pass
+                            self._auto_calibrated_once = True
+                            with self.lock:
+                                self.calibration_stage = None
+                                self.is_calibrating = False
 
                     with self.lock:
                         smile_sens = self.smile_sensitivity
@@ -613,18 +618,25 @@ class ExpressionWorker:
                     else:
                         self._wink_hold_frames = 0
 
-                    # 5. Steering via 3D solvePnP Yaw + Cheek Yaw + Roll (filtered by One-Euro)
-                    diff_yaw_3d = (yaw_3d - self.base_yaw_3d) / 22.0
-                    diff_yaw_2d = (yaw_2d - self.base_yaw) * 1.5
-                    blended_yaw = 0.55 * diff_yaw_3d + 0.45 * diff_yaw_2d
-                    diff_roll = (roll_2d - self.base_roll) / 26.0
-                    raw_steer = (blended_yaw + diff_roll * 0.55) * steer_sens
-                    if abs(raw_steer) < 0.10:
-                        raw_steer = 0.0
-                    target_steer = float(np.clip(raw_steer, -1.0, 1.0))
+                    # 5. Rock-Steady Steering (2D cheek-yaw + 3D solvePnP yaw + eye roll)
+                    #    Smooth center deadzone guarantees zero drift when holding head still!
+                    diff_yaw_3d = float(np.clip((yaw_3d - self.base_yaw_3d) / 28.0, -1.2, 1.2))
+                    diff_yaw_2d = float(np.clip((yaw_2d - self.base_yaw) * 1.45, -1.2, 1.2))
+                    diff_roll = float(np.clip((roll_2d - self.base_roll) / 30.0, -1.0, 1.0))
+
+                    # Favor 2D cheek-yaw (immune to jaw/mouth movement) blended with 3D solvePnP yaw
+                    raw_steer = (0.65 * diff_yaw_2d + 0.35 * diff_yaw_3d + 0.35 * diff_roll) * steer_sens
+                    deadzone = 0.18
+                    if abs(raw_steer) < deadzone:
+                        target_steer = 0.0
+                    else:
+                        sign = 1.0 if raw_steer > 0.0 else -1.0
+                        target_steer = sign * float(np.clip((abs(raw_steer) - deadzone) / (1.0 - deadzone), 0.0, 1.0))
 
                     # One-Euro Filtering for all continuous game channels
                     smooth_steer = float(np.clip(self._f_steer.filter(target_steer, now), -1.0, 1.0))
+                    if abs(smooth_steer) < 0.03:
+                        smooth_steer = 0.0
                     smooth_smile = float(np.clip(self._f_smile.filter(smile_score, now), 0.0, 1.0))
                     smooth_open = float(np.clip(self._f_open.filter(open_score, now), 0.0, 1.0))
 

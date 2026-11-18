@@ -100,21 +100,20 @@ class RoadRenderer:
             self.palette[k] = _lerp_color(self.palette[k], target_biome[k], blend)
         self._rebuild_sky_surface()
 
-        # Gentle road curves (blended wave with straightaway plateaus)
+        # Subtle, gentle road curves (with long straightaway plateaus)
         self._curve_time += dt * (speed / 420.0)
-        raw_wave = math.sin(self._curve_time * 0.28) * 0.65 + math.sin(self._curve_time * 0.13) * 0.35
-        # Keep gentle plateaus near 0 so straightaways feel clean
-        if abs(raw_wave) < 0.25:
+        raw_wave = math.sin(self._curve_time * 0.22) * 0.65 + math.sin(self._curve_time * 0.11) * 0.35
+        if abs(raw_wave) < 0.35:
             self.target_curve = 0.0
         else:
-            self.target_curve = max(-0.75, min(0.75, raw_wave))
-        self.current_curve += (self.target_curve - self.current_curve) * min(1.0, 1.5 * dt)
+            self.target_curve = max(-0.32, min(0.32, raw_wave * 0.45))
+        self.current_curve += (self.target_curve - self.current_curve) * min(1.0, 1.2 * dt)
 
         return BIOMES[self.biome_idx]["name"], biome_changed
 
     def _curve_dx(self, p):
         """Horizontal pixel shift for perspective curve at depth ratio p in [0, 1]."""
-        return self.current_curve * ((1.0 - p) ** 2) * 230.0
+        return self.current_curve * ((1.0 - p) ** 2) * 130.0
 
     def render(self, screen):
         """Draws the complete 2.5D curved environment with dynamic biome styling."""
