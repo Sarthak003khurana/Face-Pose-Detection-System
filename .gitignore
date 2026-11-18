@@ -14,9 +14,10 @@ env/
 *.mp4
 video_out.avi
 
-# Local game save data
+# Local game save data & test caches
 highscores.json
 settings.json
+.pytest_cache/
 
 # OS generated files
 .DS_Store

@@ -233,8 +233,8 @@ class RoadRenderer:
         """
         depth = max(world_z + 100.0, 1.0)
         scale = 140.0 / depth
-        p = (1.0 - (world_z / MAX_Z)) ** 2.2
-        p = max(0.0, min(1.0, p))
+        raw_p = max(0.0, min(1.0, 1.0 - (world_z / MAX_Z)))
+        p = raw_p ** 2.2
 
         road_h = SCREEN_HEIGHT - HORIZON_Y
         screen_y = HORIZON_Y + p * road_h

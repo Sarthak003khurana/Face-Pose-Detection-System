@@ -60,6 +60,45 @@ class Car:
         self.particles = []
         self.wheel_phase = 0.0
 
+        # Jump physics (triggered by Eyebrow Raise or J/Space)
+        self.jump_y = 0.0
+        self.jump_vy = 0.0
+        self.jump_gravity = 1350.0
+
+        # Energy Shield + Nitro Boost (triggered by Wink or Shift)
+        self.shield_timer = 0.0
+        self.shield_cooldown = 0.0
+        self.shield_pulse = 0.0
+
+    @property
+    def is_airborne(self):
+        return self.jump_y > 18.0
+
+    @property
+    def is_shielded(self):
+        return self.shield_timer > 0.0
+
+    def trigger_jump(self):
+        """Launches the car into the air if grounded. Returns True if jumped."""
+        if self.jump_y <= 1.0:
+            self.jump_vy = 540.0
+            return True
+        return False
+
+    def activate_shield(self, duration=3.5, cooldown=9.0):
+        """Activates glowing Energy Shield + Nitro Boost if off cooldown."""
+        if self.shield_timer <= 0.0 and self.shield_cooldown <= 0.0:
+            self.shield_timer = duration
+            self.shield_cooldown = cooldown
+            return True
+        return False
+
+    def reset_abilities(self):
+        self.jump_y = 0.0
+        self.jump_vy = 0.0
+        self.shield_timer = 0.0
+        self.shield_cooldown = 0.0
+
     def set_target_steer(self, target_norm_x):
         """Sets target steering offset from vision or keyboard."""
         self.target_norm_x = max(-0.82, min(0.82, target_norm_x))
@@ -97,11 +136,30 @@ class Car:
         # Wheel tread scroll
         self.wheel_phase = (self.wheel_phase + 25.0 * dt) % 8.0
 
-        # Twin exhaust flame particles
-        if random.random() < 0.7:
+        # Jump physics integration
+        if self.jump_y > 0.0 or self.jump_vy > 0.0:
+            self.jump_y += self.jump_vy * dt
+            self.jump_vy -= self.jump_gravity * dt
+            if self.jump_y <= 0.0:
+                self.jump_y = 0.0
+                self.jump_vy = 0.0
+
+        # Shield & Nitro Boost timers
+        if self.shield_timer > 0.0:
+            self.shield_timer = max(0.0, self.shield_timer - dt)
+            self.shield_pulse += 10.0 * dt
+        elif self.shield_cooldown > 0.0:
+            self.shield_cooldown = max(0.0, self.shield_cooldown - dt)
+
+        # Twin exhaust flame particles (intense cyan/gold nitro flames when shielded!)
+        spawn_prob = 0.95 if self.is_shielded else 0.70
+        if random.random() < spawn_prob:
             pipe_offset = self.w * 0.24
-            rear_y = self.screen_y - max(4, self.h * 0.12)
-            flame_col = random.choice([(255, 160, 30), (80, 200, 255), (255, 90, 20)])
+            rear_y = (self.screen_y - self.jump_y) - max(4, self.h * 0.12)
+            if self.is_shielded:
+                flame_col = random.choice([(0, 240, 255), (120, 255, 255), (255, 230, 80)])
+            else:
+                flame_col = random.choice([(255, 160, 30), (80, 200, 255), (255, 90, 20)])
             self.particles.append(ExhaustParticle(self.screen_x - pipe_offset, rear_y, flame_col))
             self.particles.append(ExhaustParticle(self.screen_x + pipe_offset, rear_y, flame_col))
 
@@ -111,9 +169,10 @@ class Car:
         return tuple(max(0, min(255, int(c + delta))) for c in color)
 
     def render(self, screen):
-        """Draws a detailed rear-view sports car that smoothly morphs its proportions."""
+        """Draws a detailed rear-view sports car that smoothly morphs, jumps, and activates shield."""
         cx = self.screen_x
-        cy = self.screen_y
+        ground_y = self.screen_y
+        cy = ground_y - self.jump_y
         w = self.w
         h = self.h
         half_w = w / 2.0
@@ -126,12 +185,13 @@ class Car:
         # Subtle body lean when steering left/right
         lean = max(-6.0, min(6.0, self.steer_velocity * 1.8))
 
-        # 1. Ground Contact Shadow
-        shadow_w = int(w * 1.18)
-        shadow_h = max(10, int(h * 0.22))
+        # 1. Ground Contact Shadow (stays on asphalt and shrinks as car jumps higher!)
+        air_factor = max(0.35, 1.0 - self.jump_y / 180.0)
+        shadow_w = max(12, int(w * 1.18 * air_factor))
+        shadow_h = max(6, int(h * 0.22 * air_factor))
         shadow_surf = pygame.Surface((shadow_w + 20, shadow_h + 10), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow_surf, (0, 0, 0, 140), (10, 5, shadow_w, shadow_h))
-        screen.blit(shadow_surf, (cx - shadow_w / 2 - 10, cy - shadow_h / 2 - 2))
+        pygame.draw.ellipse(shadow_surf, (0, 0, 0, int(145 * air_factor)), (10, 5, shadow_w, shadow_h))
+        screen.blit(shadow_surf, (cx - shadow_w / 2 - 10, ground_y - shadow_h / 2 - 2))
 
         # 2. Rear Rubber Tires (Left & Right)
         tire_w = max(8, int(w * 0.20))
@@ -290,11 +350,25 @@ class Car:
         pygame.draw.rect(screen, dark_col, wing_rect, border_radius=2)
         pygame.draw.rect(screen, light_col, wing_rect, width=1, border_radius=2)
 
+        # 10. Glowing Energy Shield Dome (when activated via Wink / Shift)
+        if self.is_shielded:
+            import math
+            pulse = 0.5 + 0.5 * math.sin(self.shield_pulse)
+            dome_w = int(w * 1.38)
+            dome_h = int(h * 1.48) + 18
+            dome_surf = pygame.Surface((dome_w + 16, dome_h + 16), pygame.SRCALPHA)
+            fill_alpha = int(42 + 28 * pulse)
+            ring_alpha = int(170 + 80 * pulse)
+            pygame.draw.ellipse(dome_surf, (0, 235, 255, fill_alpha), (8, 8, dome_w, dome_h))
+            pygame.draw.ellipse(dome_surf, (120, 255, 255, ring_alpha), (8, 8, dome_w, dome_h), width=3)
+            pygame.draw.ellipse(dome_surf, (255, 230, 80, int(120 * pulse)), (12, 12, dome_w - 8, dome_h - 8), width=1)
+            screen.blit(dome_surf, (int(cx - dome_w / 2 - 8), int(cy - dome_h + 10)))
+
     def get_hitbox(self):
         """Returns the current screen-space AABB bounding box (left, top, width, height)."""
         return pygame.Rect(
             int(self.screen_x - self.w / 2.0),
-            int(self.screen_y - self.h),
+            int((self.screen_y - self.jump_y) - self.h),
             int(self.w),
             int(self.h)
         )

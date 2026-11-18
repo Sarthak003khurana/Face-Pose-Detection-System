@@ -153,8 +153,15 @@ class ShapeShiftRacerGame:
             ("music_enabled", "Synthwave Music"),
         ]
 
-        # Calibration state
-        self.calibration_timer = 3.0
+        # 3-Step Calibration Wizard state: ("NEUTRAL", "SMILE", "OPEN")
+        self.calibration_steps = [
+            ("NEUTRAL", "STEP 1/3: RELAXED NEUTRAL FACE", "Look straight ahead with mouth closed & eyes open", (0, 230, 255)),
+            ("SMILE",   "STEP 2/3: SMILE BIG!", "Hold a big smile to personalize FLAT morph", (255, 60, 170)),
+            ("OPEN",    "STEP 3/3: OPEN MOUTH ('O' / 'AH')", "Open your mouth to personalize NARROW morph", (80, 255, 140)),
+        ]
+        self.calibration_step_idx = 0
+        self.calibration_step_duration = 2.2
+        self.calibration_timer = self.calibration_step_duration
 
         # Fonts
         self.font_title = pygame.font.SysFont("Impact", 54)
@@ -248,12 +255,20 @@ class ShapeShiftRacerGame:
                         elif self.state == "PAUSED":
                             self.state = "PLAYING"
                     elif event.key == pygame.K_c:
-                        self.vision.trigger_calibration()
+                        self.vision.trigger_calibration("NEUTRAL")
                         self.sound_mgr.play("calibrated")
                         self.popups.append(FloatingPopup(
                             "RECALIBRATING NEUTRAL FACE...",
                             SCREEN_WIDTH // 2, 170, (100, 255, 160), size=24, duration=1.2
                         ))
+                    elif event.key == pygame.K_j and self.state == "PLAYING":
+                        if self.car.trigger_jump():
+                            self.sound_mgr.play("jump")
+                            self.popups.append(FloatingPopup("JUMP!", self.car.screen_x, self.car.screen_y - 90, (0, 240, 255), size=24, duration=0.7))
+                    elif event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT) and self.state == "PLAYING":
+                        if self.car.activate_shield():
+                            self.sound_mgr.play("shield")
+                            self.popups.append(FloatingPopup("SHIELD + NITRO!", SCREEN_WIDTH // 2, 230, (0, 245, 255), size=34, duration=1.2))
                     elif self.state == "PAUSED":
                         if event.key in (pygame.K_UP, pygame.K_w):
                             self.pause_menu_idx = (self.pause_menu_idx - 1) % len(self.pause_items)
@@ -271,11 +286,20 @@ class ShapeShiftRacerGame:
                     elif event.key == pygame.K_SPACE:
                         if self.state == "START":
                             self.state = "CALIBRATING"
-                            self.calibration_timer = 3.0
-                            self.vision.trigger_calibration()
+                            self.calibration_step_idx = 0
+                            self.calibration_timer = self.calibration_step_duration
+                            self.vision.trigger_calibration("NEUTRAL")
                         elif self.state == "CALIBRATING":
+                            # Skip remaining calibration steps cleanly
+                            stage_key = self.calibration_steps[self.calibration_step_idx][0]
+                            self.vision.finalize_calibration_stage(stage_key)
+                            self.vision.trigger_calibration(None)
                             self._reset_game()
                             self.state = "PLAYING"
+                        elif self.state == "PLAYING":
+                            if self.car.trigger_jump():
+                                self.sound_mgr.play("jump")
+                                self.popups.append(FloatingPopup("JUMP!", self.car.screen_x, self.car.screen_y - 90, (0, 240, 255), size=24, duration=0.7))
                         elif self.state == "GAMEOVER":
                             self._reset_game()
                             self.state = "PLAYING"
@@ -321,6 +345,7 @@ class ShapeShiftRacerGame:
         self.car.norm_x = 0.0
         self.car.set_target_steer(0.0)
         self.car.set_shape("NORMAL")
+        self.car.reset_abilities()
 
     def _update_start_screen(self, dt):
         self.road.update(120.0, dt, distance_meters=0.0)
@@ -332,16 +357,38 @@ class ShapeShiftRacerGame:
         self.car.update(self.road, dt)
         self.calibration_timer -= dt
         if self.calibration_timer <= 0:
+            # Finalize current step and advance wizard
+            stage_key = self.calibration_steps[self.calibration_step_idx][0]
+            self.vision.finalize_calibration_stage(stage_key)
             self.sound_mgr.play("calibrated")
-            self._reset_game()
-            self.state = "PLAYING"
+
+            self.calibration_step_idx += 1
+            if self.calibration_step_idx < len(self.calibration_steps):
+                next_stage = self.calibration_steps[self.calibration_step_idx][0]
+                self.calibration_timer = self.calibration_step_duration
+                self.vision.trigger_calibration(next_stage)
+            else:
+                self.vision.trigger_calibration(None)
+                self._reset_game()
+                self.state = "PLAYING"
 
     def _update_paused(self, dt):
         # Keep popups animating while paused (live PiP keeps running in background!)
         self.popups = [p for p in self.popups if p.update(dt)]
 
     def _update_playing(self, dt):
-        vision_state = self.vision.get_state()
+        vision_state = self.vision.get_state(consume_triggers=True)
+
+        # Face-triggered Jump (Eyebrow Raise) & Shield+Nitro (Asymmetric Wink)
+        if vision_state["jump_triggered"]:
+            if self.car.trigger_jump():
+                self.sound_mgr.play("jump")
+                self.popups.append(FloatingPopup("BROW JUMP!", self.car.screen_x, self.car.screen_y - 90, (0, 240, 255), size=24, duration=0.8))
+
+        if vision_state["wink_triggered"]:
+            if self.car.activate_shield():
+                self.sound_mgr.play("shield")
+                self.popups.append(FloatingPopup("WINK SHIELD + NITRO!", SCREEN_WIDTH // 2, 230, (0, 245, 255), size=34, duration=1.3))
 
         # Keyboard fallback overrides
         keys = pygame.key.get_pressed()
@@ -363,9 +410,12 @@ class ShapeShiftRacerGame:
         if self.car.set_shape(shape_input):
             self.sound_mgr.play("morph")
 
+        # Effective speed gets +30% Nitro boost while Shield is active!
+        effective_speed = self.speed * (1.30 if self.car.is_shielded else 1.0)
+
         # Update Distance, Road, Dynamic Biome & Curves
-        self.distance += (self.speed * dt) / 10.0
-        biome_name, biome_changed = self.road.update(self.speed, dt, distance_meters=self.distance)
+        self.distance += (effective_speed * dt) / 10.0
+        biome_name, biome_changed = self.road.update(effective_speed, dt, distance_meters=self.distance)
         if biome_changed:
             self.sound_mgr.play("biome")
             self.popups.append(FloatingPopup(
@@ -387,13 +437,28 @@ class ShapeShiftRacerGame:
         self.sparks = [d for d in self.sparks if d.update(dt)]
         self.popups = [p for p in self.popups if p.update(dt)]
 
-        # Update Obstacles, Coins, Gauntlets & Collisions
-        ev = self.obstacles.update(self.speed, dt, self.car, self.sound_mgr, self.road)
+        # Update Obstacles, Coins, Gauntlets, Laser Strips & Collisions
+        ev = self.obstacles.update(effective_speed, dt, self.car, self.sound_mgr, self.road)
 
         if ev["gauntlet_started"]:
             self.popups.append(FloatingPopup(
                 "GAUNTLET WAVE!", SCREEN_WIDTH // 2, 210, (255, 80, 180), size=34, duration=1.5
             ))
+
+        if ev["shield_smashes"] > 0:
+            smash_pts = 150 * ev["shield_smashes"] * self.multiplier
+            self.score += smash_pts
+            self.screen_shake_timer = 0.14
+            self.popups.append(FloatingPopup(
+                f"SHIELD SMASH +{smash_pts}!",
+                self.car.screen_x, self.car.screen_y - self.car.h - 45,
+                (0, 245, 255), size=28, duration=1.1
+            ))
+            for _ in range(18):
+                self.sparks.append(SparkParticle(
+                    self.car.screen_x, self.car.screen_y - self.car.h / 2.0,
+                    palette=[(0, 240, 255), (255, 230, 80), (255, 255, 255)]
+                ))
 
         if ev["obstacles_passed"] > 0:
             prev_mult = self.multiplier
@@ -539,14 +604,33 @@ class ShapeShiftRacerGame:
             pygame.draw.polygon(self.screen, col, [(hx - 9, hy), (hx + 9, hy), (hx, hy + 10)])
 
         # Streak & Multiplier Pill (below telemetry box when active)
+        pill_y = 170
         if self.streak > 0:
             mult_col = (255, 220, 40) if self.multiplier >= 3 else ((0, 255, 180) if self.multiplier >= 2 else (180, 210, 255))
-            pill_surf = pygame.Surface((200, 34), pygame.SRCALPHA)
+            pill_surf = pygame.Surface((220, 34), pygame.SRCALPHA)
             pill_surf.fill((18, 14, 34, 215))
-            pygame.draw.rect(pill_surf, mult_col, (0, 0, 200, 34), width=2, border_radius=6)
-            self.screen.blit(pill_surf, (20, 170))
+            pygame.draw.rect(pill_surf, mult_col, (0, 0, 220, 34), width=2, border_radius=6)
+            self.screen.blit(pill_surf, (20, pill_y))
             st_txt = self.font_hud.render(f"STREAK {self.streak}   {self.multiplier}x", True, mult_col)
-            self.screen.blit(st_txt, (32, 173))
+            self.screen.blit(st_txt, (32, pill_y + 3))
+            pill_y += 42
+
+        # Shield / Nitro Status Pill (Wink or Shift)
+        if self.car.is_shielded:
+            sh_text = f"NITRO SHIELD: {self.car.shield_timer:.1f}s"
+            sh_col = (0, 245, 255)
+        elif self.car.shield_cooldown > 0:
+            sh_text = f"SHIELD COOLDOWN: {self.car.shield_cooldown:.1f}s"
+            sh_col = (150, 155, 175)
+        else:
+            sh_text = "SHIELD READY (WINK / SHIFT)"
+            sh_col = (80, 255, 150)
+
+        sh_surf = pygame.Surface((235, 30), pygame.SRCALPHA)
+        sh_surf.fill((18, 14, 34, 210))
+        pygame.draw.rect(sh_surf, sh_col, (0, 0, 235, 30), width=1, border_radius=6)
+        self.screen.blit(sh_surf, (20, pill_y))
+        self.screen.blit(self.font_small.render(sh_text, True, sh_col), (30, pill_y + 6))
 
         # Top-Center Morph Shape Indicator (keeps the car completely unobstructed!)
         shape_cfg = CAR_SHAPES[self.car.current_shape_key]
@@ -587,9 +671,9 @@ class ShapeShiftRacerGame:
         self.screen.blit(t1, ((SCREEN_WIDTH - t1.get_width()) // 2, 120))
         self.screen.blit(t2, ((SCREEN_WIDTH - t2.get_width()) // 2, 190))
 
-        card_w, card_h = 700, 275
+        card_w, card_h = 740, 310
         card_x = (SCREEN_WIDTH - card_w) // 2
-        card_y = 248
+        card_y = 232
         card_surf = pygame.Surface((card_w, card_h), pygame.SRCALPHA)
         card_surf.fill((20, 16, 38, 230))
         pygame.draw.rect(card_surf, (255, 0, 128), (0, 0, card_w, card_h), width=2, border_radius=10)
@@ -597,35 +681,67 @@ class ShapeShiftRacerGame:
 
         rules = [
             ("SMILE BIG", "--> Morphs car FLAT (Slides under low horizontal beams)"),
-            ("OPEN MOUTH ('O')", "--> Morphs car NARROW (Squeezes through twin pillars)"),
-            ("HEAD TURN / TILT", "--> Steers Left / Right for shifted slits & roadblocks"),
-            ("COINS & STREAKS", "--> Collect coins & chain clean passes for 2x / 3x / 5x!"),
-            ("PAUSE / AUDIO", "--> Press [P] for live sensitivity tuning, [M] for music"),
+            ("OPEN MOUTH ('O'/'AH')", "--> Morphs car NARROW (Squeezes through twin pillars)"),
+            ("RAISE EYEBROWS", "--> JUMP over red ground laser strips (Key: J / SPACE)"),
+            ("WINK ONE EYE", "--> SHIELD + NITRO Boost to smash blocks (Key: SHIFT)"),
+            ("HEAD TURN / TILT", "--> 3D solvePnP Steering for shifted slits & roadblocks"),
+            ("PAUSE / AUDIO", "--> [P] Live sensitivity sliders, [M] Synthwave music"),
         ]
 
         for i, (action, desc) in enumerate(rules):
             a_txt = self.font_body.render(action, True, (255, 230, 0))
             d_txt = self.font_body.render(desc, True, (220, 240, 255))
-            y_pos = card_y + 22 + i * 48
-            self.screen.blit(a_txt, (card_x + 28, y_pos))
-            self.screen.blit(d_txt, (card_x + 215, y_pos))
+            y_pos = card_y + 18 + i * 47
+            self.screen.blit(a_txt, (card_x + 26, y_pos))
+            self.screen.blit(d_txt, (card_x + 240, y_pos))
 
         if int(time.time() * 2) % 2 == 0:
-            prompt = self.font_sub.render("PRESS SPACE TO CALIBRATE & START", True, (100, 255, 140))
-            self.screen.blit(prompt, ((SCREEN_WIDTH - prompt.get_width()) // 2, 555))
+            prompt = self.font_sub.render("PRESS SPACE FOR 3-STEP CALIBRATION & START", True, (100, 255, 140))
+            self.screen.blit(prompt, ((SCREEN_WIDTH - prompt.get_width()) // 2, 570))
 
     def _render_calibration_overlay(self):
+        """3-Step Interactive Calibration Wizard (NEUTRAL -> SMILE -> OPEN)."""
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((5, 2, 12, 160))
+        overlay.fill((6, 3, 14, 175))
         self.screen.blit(overlay, (0, 0))
 
-        title = self.font_title.render("CALIBRATING NEUTRAL FACE", True, (0, 230, 255))
-        sub = self.font_sub.render("Look straight at the camera with a relaxed neutral face...", True, (255, 255, 255))
-        countdown = self.font_title.render(f"{max(1, int(self.calibration_timer) + 1)}", True, (255, 230, 0))
+        step_idx = min(self.calibration_step_idx, len(self.calibration_steps) - 1)
+        _, headline, instruction, accent = self.calibration_steps[step_idx]
 
-        self.screen.blit(title, ((SCREEN_WIDTH - title.get_width()) // 2, 220))
-        self.screen.blit(sub, ((SCREEN_WIDTH - sub.get_width()) // 2, 290))
-        self.screen.blit(countdown, ((SCREEN_WIDTH - countdown.get_width()) // 2, 360))
+        panel_w, panel_h = 700, 290
+        px = (SCREEN_WIDTH - panel_w) // 2
+        py = 195
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((18, 14, 34, 235))
+        pygame.draw.rect(panel, accent, (0, 0, panel_w, panel_h), width=2, border_radius=12)
+        self.screen.blit(panel, (px, py))
+
+        # Step indicator pills (1, 2, 3)
+        step_labels = ["1. NEUTRAL", "2. SMILE", "3. OPEN"]
+        for i, lbl in enumerate(step_labels):
+            pill_x = px + 95 + i * 185
+            pill_y = py + 22
+            done = i < step_idx
+            active = i == step_idx
+            col = (80, 255, 140) if done else (accent if active else (95, 100, 125))
+            pygame.draw.rect(self.screen, col, (pill_x, pill_y, 140, 28), width=2 if not active else 0, border_radius=14)
+            txt_col = (15, 12, 24) if active else col
+            st = self.font_small.render(lbl, True, txt_col)
+            self.screen.blit(st, (pill_x + (140 - st.get_width()) // 2, pill_y + 5))
+
+        title = self.font_sub.render(headline, True, accent)
+        sub = self.font_body.render(instruction, True, (235, 245, 255))
+        self.screen.blit(title, (px + (panel_w - title.get_width()) // 2, py + 78))
+        self.screen.blit(sub, (px + (panel_w - sub.get_width()) // 2, py + 122))
+
+        # Progress bar for current step
+        progress = 1.0 - max(0.0, min(1.0, self.calibration_timer / self.calibration_step_duration))
+        bar_x, bar_y, bar_w, bar_h = px + 90, py + 172, panel_w - 180, 22
+        pygame.draw.rect(self.screen, (45, 40, 65), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
+        pygame.draw.rect(self.screen, accent, (bar_x, bar_y, int(bar_w * progress), bar_h), border_radius=6)
+
+        skip_txt = self.font_small.render("Look at the top-right camera preview   |   Press SPACE to skip calibration", True, (175, 185, 210))
+        self.screen.blit(skip_txt, (px + (panel_w - skip_txt.get_width()) // 2, py + 232))
 
     def _render_pause_overlay(self):
         """Interactive Pause & Live Sensitivity Tuning Menu."""

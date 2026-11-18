@@ -105,6 +105,32 @@ class SoundManager:
         wave_cal = np.sin(2 * np.pi * f_cal * t) * np.linspace(0.38, 0.05, len(t))
         self.sounds["calibrated"] = self._make_stereo_sound(wave_cal)
 
+        # 9. Jump Spring Whoosh (Eyebrow Raise)
+        dur = 0.22
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        f_jmp = 220.0 + 520.0 * (t / dur) ** 0.7
+        wave_jmp = np.sin(2 * np.pi * np.cumsum(f_jmp) / sr) * np.exp(-7.0 * t) * 0.42
+        self.sounds["jump"] = self._make_stereo_sound(wave_jmp)
+
+        # 10. Energy Shield + Nitro Power-Up Chord (Wink)
+        dur = 0.38
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        f_sweep = np.linspace(330.0, 990.0, len(t))
+        wave_sh = (
+            0.45 * np.sin(2 * np.pi * np.cumsum(f_sweep) / sr) +
+            0.35 * np.sin(2 * np.pi * 659.25 * t) +
+            0.20 * np.sin(2 * np.pi * 987.77 * t)
+        ) * np.sin(np.pi * t / dur) * 0.45
+        self.sounds["shield"] = self._make_stereo_sound(wave_sh)
+
+        # 11. Shield Smash Impact (Bonus shatter)
+        dur = 0.24
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        noise = np.random.uniform(-1.0, 1.0, len(t))
+        ring = np.sin(2 * np.pi * 1120.0 * t)
+        wave_smash = (0.45 * noise + 0.55 * ring) * np.exp(-11.0 * t) * 0.48
+        self.sounds["smash"] = self._make_stereo_sound(wave_smash)
+
     def _generate_synthwave_loop(self):
         """
         Synthesizes an 8-second (4 bars @ 120 BPM) seamless looping retro synthwave track:

@@ -1,6 +1,8 @@
 # Shape-Shift Racer
 
-A real-time computer vision arcade game and **468-point facial expression & 3D head pose engine** where your face steers and morphs a GT sports car in real time.
+A real-time computer vision arcade game and **468-point facial expression & 3D head pose engine** where your face steers, morphs, jumps, and shields a GT sports car in real time.
+
+![Shape-Shift Racer Gameplay](assets/demo.gif)
 
 ---
 
@@ -22,17 +24,20 @@ A real-time computer vision arcade game and **468-point facial expression & 3D h
 This repository combines two components built around fast, lightweight facial landmark geometry:
 
 ### 1. Shape-Shift Racer (Face-Controlled Morphing Car Game)
-A 2.5D Pygame arcade game where your live webcam feed steers and physically reshapes a sports car in real time:
+A 2.5D Pygame arcade game where your live webcam feed controls every aspect of a GT sports car in real time:
 - **Big Smile** → Morphs the car into a slammed, wide **FLAT (`LOW-RIDER`)** supercar to slide underneath low horizontal barriers.
-- **Open Mouth ("O" / Surprise)** → Morphs the car into a tall, ultra-slim **NARROW (`SLIM-BLADE`)** concept car to squeeze between tight vertical pillars.
+- **Open Mouth ("O" / "AH")** → Morphs the car into a tall, ultra-slim **NARROW (`SLIM-BLADE`)** concept car to squeeze between tight vertical pillars.
+- **Raise Eyebrows** → Launches the car into a **JUMP** over red ground laser strips and grabs mid-air coins.
+- **Asymmetric Wink** → Activates a glowing **Energy Shield + Nitro Speed Boost** to smash straight through obstacles for bonus points (ignores normal two-eye blinks).
 - **Neutral Relaxed Face** → Restores the balanced **NORMAL (`CRUISER`)** GT coupe.
-- **Head Turn / Tilt (Yaw & Roll)** → Steers the car left and right across 3 lanes to dodge solid roadblocks.
+- **3D Head Turn / Tilt (`cv2.solvePnP`)** → Steers smoothly across 3 lanes for shifted pillar slits, double-lane roadblocks, and curved synthwave biomes.
+- **3-Step Personalized Calibration Wizard** → Captures your exact **Neutral → Smile → Open-Mouth** facial ranges in ~6 seconds on startup.
 
-#### Dual-Stage Vision Architecture
+#### Dual-Stage Vision + 3D Pose Architecture
 To keep gameplay locked at 60 FPS with zero stutter, computer vision runs on a dedicated daemon thread (`game/expression_worker.py`):
 
 ```text
-[Webcam Feed (OpenCV)]
+[Webcam Feed (OpenCV + Auto Low-Light Boost)]
         │
         ▼
 [Stage 1: SCRFD 500M ONNX (320×320, OpenCV DNN)] ──► Face Bounding Box
@@ -40,16 +45,14 @@ To keep gameplay locked at 60 FPS with zero stutter, computer vision runs on a d
         ▼
 [Stage 2: 468-Point 3D FaceMesh ONNX (192×192, ONNX Runtime, ~2 ms)]
         │
-        ├──► Roll-Normalized Eye / Lip / Cheek Geometry
-        │      ├── Smile Score  = Mouth Width Expansion + Mouth Corner Lift
-        │      ├── Open Score   = True Inner-Lip Mouth Aspect Ratio (MAR)
-        │      └── Steering X   = Cheek-to-Nose Yaw + Eye-Line Roll (with deadzone)
+        ├──► Stage 3: cv2.solvePnP (6 Canonical 3D Landmarks) ──► 3D Roll/Yaw/Pitch + XYZ Nose Axes
+        ├──► Multi-Signal Expression Geometry (Upper-Lip Smile Lift, MAR, Jaw Drop, Brow Raise, EAR Wink)
         │
         ▼
-[Thread-Safe State Buffer + Hysteresis Debouncing]
+[Velocity-Adaptive One-Euro Filters + Hysteresis Debouncing]
         │
         ▼
-[Pygame Main Thread (60 FPS)] ──► 2.5D Road, Morphing GT Car, Obstacles, Audio, PiP HUD
+[Pygame Main Thread (60 FPS)] ──► Curved Biomes, Morphing GT Car, Jump/Shield, Synthwave Audio, PiP HUD
 ```
 
 ### 2. Standalone Face Pose & Smile Estimation Demos (`Face_Pose/`)
@@ -69,15 +72,23 @@ Shape-Shift-Racer/
 ├── play_game.bat                    # One-click Windows launcher (Python 3.11)
 ├── requirements.txt                 # Core Python dependencies
 ├── README.md                        # Project documentation
+├── assets/
+│   └── demo.gif                     # Animated gameplay preview GIF
 ├── game/                            # Game engine & dual-stage vision API
 │   ├── __init__.py
 │   ├── config.py                    # Display, biomes, car shapes, speeds, streak tiers
+│   ├── filters.py                   # Velocity-adaptive One-Euro Filter
+│   ├── pose_3d.py                   # 3D cv2.solvePnP head pose & RGB nose axes
 │   ├── expression_worker.py         # SCRFDDetector, FaceMesh468, ExpressionWorker
-│   ├── car.py                       # Rear-view GT sports car renderer & tweening
-│   ├── obstacles.py                 # LowBeam, shifted PillarGate, RoadBlock, Coins, Gauntlets
+│   ├── car.py                       # Rear-view GT sports car, jump physics & shield dome
+│   ├── obstacles.py                 # LowBeam, PillarGate, LaserStrip, RoadBlock, Coins, Gauntlets
 │   ├── road.py                      # 2.5D curved synthwave road & dynamic biome renderer
 │   ├── sound_manager.py             # Procedural stereo SFX & looping synthwave soundtrack
 │   └── storage.py                   # Persistent Top-5 high scores & sensitivity settings
+├── tests/                           # Automated pytest test suite
+│   ├── test_filters_and_pose.py
+│   ├── test_vision_and_expressions.py
+│   └── test_game_mechanics.py
 └── Face_Pose/                       # Standalone pose estimation demos & weights
     ├── pose_detection_scrfd.py      # Standalone SCRFD ONNX detector demo
     ├── pose_detection_retinaface.py # Standalone RetinaFace pose & smile demo
@@ -185,10 +196,14 @@ Inside `pose_detection_mtcnn.py` and `pose_detection_retinaface.py`, you can tog
 | Input | Action |
 | :--- | :--- |
 | **Big Smile** | Morph car **FLAT** (slide under red horizontal beams) |
-| **Open Mouth ("O")** | Morph car **NARROW** (squeeze through cyan twin pillars) |
+| **Open Mouth ("O" / "AH")** | Morph car **NARROW** (squeeze through cyan twin pillars) |
+| **Raise Eyebrows** | **JUMP** over red ground laser strips |
+| **Wink One Eye** | Activate **Energy Shield + Nitro Boost** (smashes blocks!) |
 | **Relaxed Neutral Face** | Return to **NORMAL** balanced cruiser |
-| **Head Turn / Tilt** | Steer left / right around orange lane roadblocks |
-| `SPACE` | Start calibration / skip calibration / resume / restart after Game Over |
+| **Head Turn / Tilt** | 3D `solvePnP` steering left / right around roadblocks |
+| `SPACE` | Start 3-step calibration / skip calibration / Jump (in-game) / restart |
+| `J` | Keyboard fallback: **JUMP** |
+| `Shift` | Keyboard fallback: **SHIELD + NITRO** |
 | `P` | Pause & open live Smile / O-Mouth / Steer sensitivity menu |
 | `M` | Toggle procedural synthwave background music ON / OFF |
 | `C` | Recalibrate neutral face baseline mid-game |
@@ -211,27 +226,13 @@ Press `q` in the OpenCV window to exit.
 
 ## Testing & Verification
 
-Run these verification checks from the repository root to validate every subsystem (no webcam or monitor required for tests 1–3):
-
-### 1. Module & Model Loading Smoke Test
-Verifies all Python modules, SCRFD ONNX, and 468-point FaceMesh ONNX load cleanly:
+### Automated `pytest` Suite (Recommended)
+Run all unit & integration tests (One-Euro Filter, 3D `solvePnP`, ONNX models, 3-step calibration, hysteresis, jump/shield physics, obstacles, biomes, audio, and persistence):
 ```bash
-python -c "import game.config, game.car, game.road, game.obstacles, game.sound_manager; from game.expression_worker import SCRFDDetector, FaceMesh468; SCRFDDetector('Face_Pose/models/scrfd_500m_kps.onnx'); FaceMesh468('Face_Pose/models/face_mesh.onnx'); print('OK: All modules and ONNX models loaded.')"
+pytest -v
 ```
 
-### 2. Headless Game Loop & Rendering Test
-Simulates road scrolling, car morphing across all three shapes, obstacle spawning, collision checks, and Pygame rendering using SDL's dummy video driver:
-```bash
-python -c "import os; os.environ['SDL_VIDEODRIVER']='dummy'; import pygame; pygame.init(); screen=pygame.display.set_mode((1280,720)); from game.road import RoadRenderer; from game.car import Car; from game.obstacles import ObstacleManager; from game.sound_manager import SoundManager; r=RoadRenderer(); c=Car(); o=ObstacleManager(); s=SoundManager(); o._spawn_random_obstacle(); [c.set_shape(k) or c.update(r,0.016) or r.update(420.0,0.016) or o.update(420.0,0.016,c,s) for k in ('NORMAL','FLAT','NARROW')]; r.render(screen); o.render(screen,r); c.render(screen); print('OK: Headless simulation and rendering passed.')"
-```
-
-### 3. Procedural Audio Synthesis Test
-Verifies stereo NumPy waveform synthesis via `SoundManager`:
-```bash
-python -c "import pygame; pygame.init(); from game.sound_manager import SoundManager; sm=SoundManager(); assert set(sm.sounds.keys()) >= {'morph','clear','crash','calibrated'}; print('OK: Procedural sounds synthesized:', list(sm.sounds.keys()))"
-```
-
-### 4. Live Webcam & 468-Point Expression Worker Test
+### Live Webcam & 468-Point Expression Worker Check
 Captures live frames for 2.5 seconds and prints real-time telemetry from `ExpressionWorker`:
 ```bash
 python -c "import time; from game.expression_worker import ExpressionWorker; w=ExpressionWorker(camera_id=0); w.start(); time.sleep(2.5); st=w.get_state(); w.stop(); print({k: round(v,3) if isinstance(v,float) else v for k,v in st.items() if k!='pip_rgb_bytes'})"

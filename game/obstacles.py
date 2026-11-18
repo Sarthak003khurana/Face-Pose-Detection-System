@@ -292,8 +292,67 @@ class RoadBlock(Obstacle):
                 screen.blit(txt, (cx - txt.get_width() // 2, rect.top - txt.get_height() - 2))
 
 
+class LaserStrip(Obstacle):
+    """
+    Glowing neon ground laser/spike strip spanning the road.
+    Requires jumping (Eyebrow Raise or J/Space) to leap cleanly over it!
+    """
+    def __init__(self, z=MAX_Z):
+        super().__init__(z=z, norm_x=0.0)
+        self.type_name = "LASER_STRIP"
+        self.prompt_text = "JUMP (RAISE BROWS)"
+
+    def check_collision(self, car):
+        if self.collided or self.passed:
+            return False
+        if abs(self.z - CAR_Z) < 22.0:
+            if not car.is_airborne:
+                self.collided = True
+                return True
+        return False
+
+    def check_near_miss(self, car):
+        if self.collided or self.near_miss_awarded:
+            return False
+        if self.z < CAR_Z - 14.0 and 18.0 < car.jump_y <= 38.0:
+            self.near_miss_awarded = True
+            return True
+        return False
+
+    def draw(self, screen, road_renderer):
+        if self.z <= 0:
+            return
+        lx, ly, scale = road_renderer.get_screen_coords(-0.95, self.z)
+        rx, ry, _ = road_renderer.get_screen_coords(0.95, self.z)
+        cx, cy, _ = road_renderer.get_screen_coords(0.0, self.z)
+
+        strip_h = max(int(18 * scale), 4)
+        strip_w = max(4, int(rx - lx))
+        top_y = int(ly - strip_h)
+
+        # Glowing plasma laser beam along the asphalt
+        glow_surf = pygame.Surface((strip_w + 10, strip_h + 14), pygame.SRCALPHA)
+        pygame.draw.rect(glow_surf, (255, 40, 20, 110), (5, 4, strip_w, strip_h + 6), border_radius=4)
+        screen.blit(glow_surf, (int(lx) - 5, top_y - 4))
+
+        pygame.draw.rect(screen, (255, 40, 40), (int(lx), top_y, strip_w, strip_h), border_radius=3)
+        core_h = max(2, strip_h // 3)
+        pygame.draw.rect(screen, (255, 240, 140), (int(lx) + 2, top_y + (strip_h - core_h) // 2, max(2, strip_w - 4), core_h))
+
+        # Side emitter pylons
+        pylon_w = max(int(14 * scale), 3)
+        pylon_h = max(int(26 * scale), 6)
+        pygame.draw.rect(screen, (90, 95, 115), (int(lx) - pylon_w, int(ly - pylon_h), pylon_w, pylon_h))
+        pygame.draw.rect(screen, (90, 95, 115), (int(rx), int(ry - pylon_h), pylon_w, pylon_h))
+
+        if scale > 0.45:
+            font = pygame.font.SysFont("Impact", max(11, int(16 * scale)))
+            txt = font.render(self.prompt_text, True, (255, 245, 130))
+            screen.blit(txt, (cx - txt.get_width() // 2, top_y - txt.get_height() - 4))
+
+
 class ObstacleManager:
-    """Manages spawning obstacles, combo gauntlets, coins, and collision/near-miss events."""
+    """Manages spawning obstacles, combo gauntlets, coins, and collision/shield-smash events."""
     def __init__(self):
         self.obstacles = []
         self.coins = []
@@ -310,6 +369,7 @@ class ObstacleManager:
             "obstacles_passed": 0,
             "coins_collected": 0,
             "near_misses": 0,
+            "shield_smashes": 0,
             "collision": False,
             "gauntlet_started": False,
             "coin_screen_positions": [],
@@ -320,8 +380,14 @@ class ObstacleManager:
             obs.update(speed, dt)
 
             if obs.check_collision(car):
-                events["collision"] = True
-                sound_mgr.play("crash")
+                if car.is_shielded:
+                    # Shield shatters obstacle for bonus points instead of taking damage!
+                    obs.passed = True
+                    events["shield_smashes"] += 1
+                    sound_mgr.play("smash")
+                else:
+                    events["collision"] = True
+                    sound_mgr.play("crash")
 
             if not obs.passed and obs.z < CAR_Z - 15.0 and not obs.collided:
                 obs.passed = True
@@ -369,9 +435,9 @@ class ObstacleManager:
         """Queues a fun 3-obstacle combo Morph Gauntlet."""
         gap_time = max(1.15, 1.65 - (speed / 1600.0))
         patterns = [
-            [("LOW_BEAM", 0.0), ("PILLAR_GATE", 0.0), ("ROAD_BLOCK_SINGLE", None)],
+            [("LOW_BEAM", 0.0), ("PILLAR_GATE", 0.0), ("LASER_STRIP", 0.0)],
             [("ROAD_BLOCK_DOUBLE", None), ("LOW_BEAM", 0.0), ("PILLAR_GATE", random.choice([-0.42, 0.42]))],
-            [("PILLAR_GATE", 0.0), ("LOW_BEAM", 0.0), ("ROAD_BLOCK_DOUBLE", None)],
+            [("LASER_STRIP", 0.0), ("LOW_BEAM", 0.0), ("ROAD_BLOCK_DOUBLE", None)],
         ]
         chosen = random.choice(patterns)
         self._spawn_from_spec(chosen[0])
@@ -384,15 +450,18 @@ class ObstacleManager:
 
         if kind == "LOW_BEAM":
             self.obstacles.append(LowBeam(z=MAX_Z))
-            # Spawn coin tucked low right under the beam
             coin_x = random.choice([-0.35, 0.0, 0.35])
             self.coins.append(Coin(z=MAX_Z - 35.0, norm_x=coin_x, elevation=8.0))
 
         elif kind == "PILLAR_GATE":
             gate_x = param if param is not None else 0.0
             self.obstacles.append(PillarGate(z=MAX_Z, norm_x=gate_x))
-            # Spawn coin dead-center inside the narrow slit
             self.coins.append(Coin(z=MAX_Z - 35.0, norm_x=gate_x, elevation=22.0))
+
+        elif kind == "LASER_STRIP":
+            self.obstacles.append(LaserStrip(z=MAX_Z))
+            # High floating coin above the laser strip for mid-air grabs!
+            self.coins.append(Coin(z=MAX_Z - 20.0, norm_x=0.0, elevation=64.0))
 
         elif kind == "ROAD_BLOCK_SINGLE":
             blocked = random.choice([0, 1, 2])
@@ -407,15 +476,15 @@ class ObstacleManager:
             self.coins.append(Coin(z=MAX_Z - 30.0, norm_x=LANE_X[open_lane], elevation=18.0))
 
     def _spawn_random_obstacle(self):
-        """Selects a varied obstacle, unlocking shifted gates and double blocks as score rises."""
+        """Selects a varied obstacle, unlocking shifted gates, laser strips, and double blocks."""
         if self.obstacles_spawned < 4:
-            # Friendly opening sequence
-            choices = [("LOW_BEAM", 0.0), ("PILLAR_GATE", 0.0), ("ROAD_BLOCK_SINGLE", None)]
+            choices = [("LOW_BEAM", 0.0), ("PILLAR_GATE", 0.0), ("ROAD_BLOCK_SINGLE", None), ("LASER_STRIP", 0.0)]
         else:
             choices = [
                 ("LOW_BEAM", 0.0),
                 ("PILLAR_GATE", 0.0),
                 ("PILLAR_GATE", random.choice([-0.42, 0.42])),
+                ("LASER_STRIP", 0.0),
                 ("ROAD_BLOCK_SINGLE", None),
                 ("ROAD_BLOCK_DOUBLE", None),
             ]
