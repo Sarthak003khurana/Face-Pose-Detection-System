@@ -229,8 +229,31 @@ class ExpressionWorker:
         self._smooth_open = 0.0
         self._active_shape = "NORMAL"
 
+        # Runtime tunable sensitivity multipliers (adjustable from Pause menu)
+        self.smile_sensitivity = 1.0
+        self.open_sensitivity = 1.0
+        self.steer_sensitivity = 1.0
+
         # Raw RGB bytes for PiP display
         self.pip_rgb_bytes = None
+
+    def set_sensitivities(self, smile=None, open_m=None, steer=None):
+        """Updates expression and steering sensitivity multipliers safely at runtime."""
+        with self.lock:
+            if smile is not None:
+                self.smile_sensitivity = float(np.clip(smile, 0.5, 2.0))
+            if open_m is not None:
+                self.open_sensitivity = float(np.clip(open_m, 0.5, 2.0))
+            if steer is not None:
+                self.steer_sensitivity = float(np.clip(steer, 0.5, 2.0))
+
+    def get_sensitivities(self):
+        with self.lock:
+            return {
+                "smile_sensitivity": self.smile_sensitivity,
+                "open_sensitivity": self.open_sensitivity,
+                "steer_sensitivity": self.steer_sensitivity,
+            }
 
     def start(self):
         if self.running:
@@ -348,6 +371,10 @@ class ExpressionWorker:
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
 
+            # Auto low-light boost for dim rooms (keeps SCRFD & FaceMesh locked on)
+            if float(frame.mean()) < 75.0:
+                frame = cv2.convertScaleAbs(frame, alpha=1.28, beta=18)
+
             now = time.time()
             current_fps = 1.0 / max(now - last_time, 1e-4)
             last_time = now
@@ -396,14 +423,16 @@ class ExpressionWorker:
                                 flush=True
                             )
 
+                    with self.lock:
+                        smile_sens = self.smile_sensitivity
+                        open_sens = self.open_sensitivity
+                        steer_sens = self.steer_sensitivity
+
                     # 1. Open Mouth ("O") Score via true inner lip MAR
                     delta_mar = mar - self.base_mar
-                    # Also bonus if mouth narrows into an "O" while open
                     o_narrow_bonus = max(0.0, (self.base_mouth_w_ratio - mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.18, 0.04))
-                    open_score = float(np.clip(
-                        (delta_mar / 0.24) + (0.25 * o_narrow_bonus if delta_mar > 0.08 else 0.0),
-                        0.0, 1.0
-                    ))
+                    raw_open = (delta_mar / 0.24) + (0.25 * o_narrow_bonus if delta_mar > 0.08 else 0.0)
+                    open_score = float(np.clip(raw_open * open_sens, 0.0, 1.0))
 
                     # 2. Smile Score via Mouth Width Expansion + Corner Lift
                     width_gain = (mouth_w_ratio - self.base_mouth_w_ratio) / max(self.base_mouth_w_ratio * 0.13, 0.04)
@@ -411,8 +440,7 @@ class ExpressionWorker:
                     width_score = float(np.clip(width_gain, 0.0, 1.0))
                     lift_score = float(np.clip(lift_gain, 0.0, 1.0))
 
-                    # Suppress smile false-positives if mouth is wide open vertically in an "O"
-                    raw_smile = 0.55 * width_score + 0.45 * lift_score
+                    raw_smile = (0.55 * width_score + 0.45 * lift_score) * smile_sens
                     if mar > self.base_mar + 0.28 and width_score < 0.35:
                         raw_smile *= 0.35
                     smile_score = float(np.clip(raw_smile, 0.0, 1.0))
@@ -420,7 +448,7 @@ class ExpressionWorker:
                     # 3. Steering from true cheek-to-nose Yaw + eye Roll (with deadzone)
                     diff_yaw = yaw - self.base_yaw
                     diff_roll = (roll_deg - self.base_roll) / 26.0
-                    raw_steer = diff_yaw * 1.65 + diff_roll * 0.60
+                    raw_steer = (diff_yaw * 1.65 + diff_roll * 0.60) * steer_sens
                     if abs(raw_steer) < 0.10:
                         raw_steer = 0.0
                     target_steer = float(np.clip(raw_steer, -1.0, 1.0))

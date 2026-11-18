@@ -71,12 +71,13 @@ Shape-Shift-Racer/
 ├── README.md                        # Project documentation
 ├── game/                            # Game engine & dual-stage vision API
 │   ├── __init__.py
-│   ├── config.py                    # Display, road, car shapes, speeds, thresholds
+│   ├── config.py                    # Display, biomes, car shapes, speeds, streak tiers
 │   ├── expression_worker.py         # SCRFDDetector, FaceMesh468, ExpressionWorker
 │   ├── car.py                       # Rear-view GT sports car renderer & tweening
-│   ├── obstacles.py                 # LowBeam, PillarGate, RoadBlock, ObstacleManager
-│   ├── road.py                      # 2.5D synthwave perspective road renderer
-│   └── sound_manager.py             # Procedural NumPy/Pygame stereo SFX synthesizer
+│   ├── obstacles.py                 # LowBeam, shifted PillarGate, RoadBlock, Coins, Gauntlets
+│   ├── road.py                      # 2.5D curved synthwave road & dynamic biome renderer
+│   ├── sound_manager.py             # Procedural stereo SFX & looping synthwave soundtrack
+│   └── storage.py                   # Persistent Top-5 high scores & sensitivity settings
 └── Face_Pose/                       # Standalone pose estimation demos & weights
     ├── pose_detection_scrfd.py      # Standalone SCRFD ONNX detector demo
     ├── pose_detection_retinaface.py # Standalone RetinaFace pose & smile demo
@@ -187,7 +188,9 @@ Inside `pose_detection_mtcnn.py` and `pose_detection_retinaface.py`, you can tog
 | **Open Mouth ("O")** | Morph car **NARROW** (squeeze through cyan twin pillars) |
 | **Relaxed Neutral Face** | Return to **NORMAL** balanced cruiser |
 | **Head Turn / Tilt** | Steer left / right around orange lane roadblocks |
-| `SPACE` | Start calibration / skip calibration / restart after Game Over |
+| `SPACE` | Start calibration / skip calibration / resume / restart after Game Over |
+| `P` | Pause & open live Smile / O-Mouth / Steer sensitivity menu |
+| `M` | Toggle procedural synthwave background music ON / OFF |
 | `C` | Recalibrate neutral face baseline mid-game |
 | `A` / `D` or `←` / `→` | Keyboard fallback: steer left / right |
 | `↓` / `S` | Keyboard fallback: morph **FLAT** |

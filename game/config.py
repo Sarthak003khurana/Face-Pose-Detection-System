@@ -1,5 +1,5 @@
 """
-Game configuration, visual constants, and expression thresholds.
+Game configuration, visual constants, dynamic biomes, and expression thresholds.
 """
 
 # Screen & Display Settings
@@ -55,28 +55,113 @@ CAR_SHAPES = {
 LOW_BEAM_GAP_HEIGHT = 30   # Only FLAT (h=22) fits; NORMAL (h=50) & NARROW (h=100) crash
 PILLAR_GAP_WIDTH = 48      # Only NARROW (w=32) fits; NORMAL (w=84) & FLAT (w=136) crash
 
-# Movement & Speed
+# Movement, Speed & Scoring
 BASE_SPEED = 420.0         # Units per second along Z-axis
-SPEED_INCREMENT = 12.0     # Incremental speed increase per obstacle passed
-MAX_SPEED = 900.0
+SPEED_INCREMENT = 10.0     # Incremental speed increase per obstacle passed
+MAX_SPEED = 920.0
 STEER_SPEED = 6.0          # Responsiveness of lateral movement
 
-# Vision & Expression Thresholds
-DEFAULT_SMILE_MULTIPLIER = 1.14      # Smile ratio must exceed baseline * 1.14
-DEFAULT_OPEN_MOUTH_MULTIPLIER = 1.28 # Mouth vertical ratio must exceed baseline * 1.28
+OBSTACLE_BASE_POINTS = 100
+COIN_BASE_POINTS = 50
+NEAR_MISS_BONUS = 50
+
+# Streak Multiplier Tiers: (min_streak, multiplier)
+STREAK_TIERS = [
+    (10, 5),
+    (6, 3),
+    (3, 2),
+    (0, 1),
+]
+
+# Dynamic Biomes (cycles every BIOME_DISTANCE meters)
+BIOME_DISTANCE = 500.0
+BIOMES = [
+    {
+        "name": "SUNSET DRIVE",
+        "sky_top": (15, 5, 32),
+        "sky_bottom": (62, 16, 72),
+        "sun": (255, 215, 0),
+        "sun_glow": (255, 90, 40),
+        "mountain": (36, 12, 52),
+        "ground": (12, 8, 22),
+        "asphalt_a": (28, 22, 42),
+        "asphalt_b": (22, 16, 34),
+        "curb_light": (255, 40, 120),
+        "curb_dark": (42, 20, 72),
+        "accent": (0, 230, 255),
+    },
+    {
+        "name": "CYBER NIGHT",
+        "sky_top": (4, 10, 28),
+        "sky_bottom": (14, 38, 80),
+        "sun": (0, 235, 255),
+        "sun_glow": (0, 120, 255),
+        "mountain": (10, 22, 48),
+        "ground": (5, 10, 20),
+        "asphalt_a": (18, 26, 44),
+        "asphalt_b": (13, 20, 35),
+        "curb_light": (0, 220, 255),
+        "curb_dark": (18, 42, 85),
+        "accent": (0, 255, 200),
+    },
+    {
+        "name": "NEON TOKYO",
+        "sky_top": (8, 22, 28),
+        "sky_bottom": (22, 62, 58),
+        "sun": (120, 255, 170),
+        "sun_glow": (255, 40, 160),
+        "mountain": (14, 36, 42),
+        "ground": (8, 16, 18),
+        "asphalt_a": (22, 34, 38),
+        "asphalt_b": (16, 26, 30),
+        "curb_light": (50, 255, 140),
+        "curb_dark": (70, 18, 68),
+        "accent": (255, 60, 180),
+    },
+    {
+        "name": "PLASMA STORM",
+        "sky_top": (28, 4, 14),
+        "sky_bottom": (85, 18, 28),
+        "sun": (255, 120, 20),
+        "sun_glow": (255, 30, 50),
+        "mountain": (48, 10, 20),
+        "ground": (20, 6, 10),
+        "asphalt_a": (38, 18, 26),
+        "asphalt_b": (28, 12, 18),
+        "curb_light": (255, 200, 0),
+        "curb_dark": (95, 16, 24),
+        "accent": (255, 210, 40),
+    },
+]
+
+# Vision & Expression Thresholds / Defaults
+DEFAULT_SMILE_MULTIPLIER = 1.14
+DEFAULT_OPEN_MOUTH_MULTIPLIER = 1.28
 STEER_SENSITIVITY_YAW = 0.045
 STEER_SENSITIVITY_ROLL = 0.055
 
-# Palette (Cyberpunk / Retro Synthwave)
-COLOR_SKY_TOP = (15, 5, 30)
-COLOR_SKY_BOTTOM = (55, 15, 65)
-COLOR_SUN = (255, 215, 0)
-COLOR_SUN_GLOW = (255, 90, 40)
-COLOR_MOUNTAIN = (35, 12, 50)
+DEFAULT_SETTINGS = {
+    "smile_sensitivity": 1.0,
+    "open_sensitivity": 1.0,
+    "steer_sensitivity": 1.0,
+    "music_enabled": True,
+}
+
+# Persistence Files
+HIGHSCORE_FILE = "highscores.json"
+SETTINGS_FILE = "settings.json"
+MAX_HIGHSCORES = 5
+
+# Base Palette Shortcuts
+COLOR_SKY_TOP = BIOMES[0]["sky_top"]
+COLOR_SKY_BOTTOM = BIOMES[0]["sky_bottom"]
+COLOR_SUN = BIOMES[0]["sun"]
+COLOR_SUN_GLOW = BIOMES[0]["sun_glow"]
+COLOR_MOUNTAIN = BIOMES[0]["mountain"]
 COLOR_GRID = (160, 40, 180)
 COLOR_ROAD = (25, 20, 35)
-COLOR_CURB_LIGHT = (255, 40, 120)
-COLOR_CURB_DARK = (40, 20, 70)
+COLOR_CURB_LIGHT = BIOMES[0]["curb_light"]
+COLOR_CURB_DARK = BIOMES[0]["curb_dark"]
 COLOR_LANE_MARK = (255, 255, 255)
 COLOR_HUD_BG = (20, 20, 30, 200)
 COLOR_NEON_YELLOW = (255, 230, 0)
