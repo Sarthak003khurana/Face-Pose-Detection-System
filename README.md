@@ -140,6 +140,7 @@ Shape-Shift-Racer/
    - `opencv-python==4.10.0.84`
    - `numpy>=1.23.0`
    - `onnxruntime>=1.18.0`
+   - `pytest>=8.0.0`
 
 4. **(Optional) Dependencies for legacy TensorFlow demos**
    Only required if you want to run `Face_Pose/pose_detection_mtcnn.py` or `Face_Pose/pose_detection_retinaface.py`:
@@ -152,28 +153,32 @@ Shape-Shift-Racer/
 ## Configuration
 
 ### 1. Game & Visual Settings (`game/config.py`)
-All gameplay, physics, and visual parameters live in [`game/config.py`](game/config.py):
+All gameplay, biome, physics, and visual parameters live in [`game/config.py`](game/config.py):
 
 | Constant | Default | Description |
 | :--- | :--- | :--- |
 | `SCREEN_WIDTH`, `SCREEN_HEIGHT`, `FPS` | `1280`, `720`, `60` | Window resolution and target frame rate. |
 | `CAR_SHAPES["NORMAL"]` | `84 × 50` px | Standard Cruiser width, height, and neon color. |
 | `CAR_SHAPES["FLAT"]` | `136 × 22` px | Low-Rider dimensions when smiling. |
-| `CAR_SHAPES["NARROW"]` | `32 × 100` px | Slim-Blade dimensions when making an "O" mouth. |
+| `CAR_SHAPES["NARROW"]` | `32 × 100` px | Slim-Blade dimensions when opening mouth. |
 | `LOW_BEAM_GAP_HEIGHT` | `30` px | Vertical clearance under `LowBeam` obstacles (only `FLAT` fits). |
 | `PILLAR_GAP_WIDTH` | `48` px | Horizontal gap between `PillarGate` pillars (only `NARROW` fits). |
-| `BASE_SPEED`, `SPEED_INCREMENT`, `MAX_SPEED` | `420.0`, `12.0`, `900.0` | Starting speed, acceleration per passed obstacle, and speed cap. |
+| `BASE_SPEED`, `SPEED_INCREMENT`, `MAX_SPEED` | `420.0`, `10.0`, `920.0` | Starting speed, acceleration per passed obstacle, and speed cap. |
+| `BIOME_DISTANCE`, `BIOMES` | `500.0` m, 4 themes | Cycles **Sunset Drive → Cyber Night → Neon Tokyo → Plasma Storm**. |
+| `STREAK_TIERS` | `3→2×`, `6→3×`, `10→5×` | Score multiplier progression for consecutive clean passes. |
+| `HIGHSCORE_FILE`, `SETTINGS_FILE` | `highscores.json`, `settings.json` | Local persistence for Top-5 leaderboard and live Pause-menu settings. |
 | `PIP_WIDTH`, `PIP_HEIGHT`, `PIP_X`, `PIP_Y` | `260 × 195` | Top-right webcam Picture-in-Picture overlay geometry. |
 
 ### 2. Vision & Expression Settings (`game/expression_worker.py`)
-Configure camera selection, models, and sensitivity in [`game/expression_worker.py`](game/expression_worker.py):
+Configure camera selection, models, filtering, and sensitivity in [`game/expression_worker.py`](game/expression_worker.py):
 
+- **Live Sensitivity Sliders (`P` Pause Menu)**: Tune `Smile`, `O-Mouth`, and `Steer` sensitivity (`0.5×`–`2.0×`) plus `Synthwave Music` live in-game — saved automatically to `settings.json`.
 - **Camera Index**: Pass `camera_id=0` (internal webcam) or `camera_id=1` (external USB webcam) to `ExpressionWorker(...)` in `run_game.py`.
 - **Detector Model**: Swap `scrfd_500m_kps.onnx` (fastest) for `scrfd_2.5g_kps.onnx` or `scrfd_10g_kps.onnx` (highest accuracy) via `model_path`.
-- **Confidence & NMS Thresholds**: `SCRFDDetector(onnx_path, conf_thresh=0.35, nms_thresh=0.45)`. Lower `conf_thresh` (e.g. `0.25`) for very dark rooms.
-- **Expression Hysteresis**: In `ExpressionWorker._update_shape_hysteresis()`, adjust `enter_thresh = 0.48` (trigger point) and `exit_thresh = 0.34` (release point) to make morphing more or less sensitive.
-- **Steering Deadzone**: In `ExpressionWorker._run_loop()`, adjust `if abs(raw_steer) < 0.10: raw_steer = 0.0` to widen or tighten center-lane stability.
-- **Neutral Baseline Calibration**: Automatically collects 30 frames on startup and whenever you press `C` in-game (`calibration_target_count = 30`).
+- **Confidence & NMS Thresholds**: `SCRFDDetector(onnx_path, conf_thresh=0.35, nms_thresh=0.45)`. Auto low-light boost (`alpha=1.28, beta=18`) activates automatically when mean frame brightness drops below `75`.
+- **Expression Hysteresis**: In `ExpressionWorker._update_shape_hysteresis()`, `enter_thresh = 0.42` (trigger point) and `exit_thresh = 0.28` (release point) prevent shape flicker.
+- **Steering Deadzone & One-Euro Filter**: Smooth center deadzone `deadzone = 0.18` with `OneEuroFilter(min_cutoff=0.8, beta=0.04)` eliminates drift when sitting still while keeping intentional head turns responsive.
+- **3-Step Calibration Wizard**: Auto-zeroes neutral pose on the first 10 frames on startup, then guides **Neutral → Smile → Open** (`calibration_target_count = 25` samples per stage) when starting a run (`SPACE` skips anytime, `C` recalibrates mid-game).
 
 ### 3. Standalone Demo Settings (`Face_Pose/*.py`)
 Inside `pose_detection_mtcnn.py` and `pose_detection_retinaface.py`, you can toggle:
@@ -239,17 +244,17 @@ python -c "import time; from game.expression_worker import ExpressionWorker; w=E
 ```
 Expected output when seated in front of your webcam:
 ```python
-{'steer_x': 0.0, 'shape': 'NORMAL', 'face_detected': True, 'camera_available': True, 'smile_intensity': 0.01, 'open_intensity': 0.05, 'is_calibrating': False, 'fps': 28.5}
+{'steer_x': 0.0, 'shape': 'NORMAL', 'face_detected': True, 'camera_available': True, 'smile_intensity': 0.01, 'open_intensity': 0.03, 'brow_intensity': 0.02, 'jump_triggered': False, 'wink_triggered': False, 'yaw_deg': 1.2, 'pitch_deg': -4.5, 'roll_deg': 0.8, 'is_calibrating': False, 'calibration_stage': None, 'fps': 28.5}
 ```
 
 ---
 
 ## Python API Reference
 
-This project exposes a clean, reusable **Python API** (no external web server required) so you can embed real-time face detection, 468-point facial landmarks, and expression/pose telemetry into your own applications.
+This project exposes a clean, reusable **Python API** (no external web server required) so you can embed real-time face detection, 468-point facial landmarks, 3D head pose, and expression telemetry into your own applications.
 
-### 1. `ExpressionWorker` (High-Level Threaded Expression & Steering API)
-Located in `game.expression_worker`. Runs webcam capture + SCRFD + 468-point FaceMesh in a background thread.
+### 1. `ExpressionWorker` (High-Level Threaded Expression, 3D Pose & Gesture API)
+Located in `game.expression_worker`. Runs webcam capture + SCRFD + 468-point FaceMesh + 3D `cv2.solvePnP` + One-Euro Filters in a background thread.
 
 ```python
 import time
@@ -260,18 +265,23 @@ worker = ExpressionWorker(
     mesh_path="Face_Pose/models/face_mesh.onnx",
     camera_id=0,
 )
+worker.set_sensitivities(smile=1.0, open_m=1.0, steer=1.0)
 worker.start()
-worker.trigger_calibration()  # Optional: re-baseline neutral face
+worker.trigger_calibration("NEUTRAL")  # Optional: "NEUTRAL", "SMILE", "OPEN", or None
 
 try:
     for _ in range(50):
-        state = worker.get_state()
+        state = worker.get_state(consume_triggers=True)
         if state["face_detected"]:
             print(
                 f"Shape={state['shape']:<6} | "
                 f"Steer={state['steer_x']:+.2f} | "
                 f"Smile={state['smile_intensity']:.2f} | "
                 f"Open={state['open_intensity']:.2f} | "
+                f"Brow={state['brow_intensity']:.2f} | "
+                f"Jump={state['jump_triggered']} | "
+                f"Wink={state['wink_triggered']} | "
+                f"3D=({state['yaw_deg']:+.0f},{state['pitch_deg']:+.0f},{state['roll_deg']:+.0f}) | "
                 f"FPS={state['fps']:.1f}"
             )
         time.sleep(0.1)
@@ -279,32 +289,49 @@ finally:
     worker.stop()
 ```
 
+#### Key `ExpressionWorker` Methods
+- `.start()` / `.stop()` — Starts or cleanly shuts down the background vision thread.
+- `.trigger_calibration(stage="NEUTRAL")` — Starts/switches calibration stage (`"NEUTRAL"`, `"SMILE"`, `"OPEN"`, or `None`).
+- `.finalize_calibration_stage(stage)` — Commits collected samples for `stage` immediately.
+- `.set_sensitivities(smile=None, open_m=None, steer=None)` / `.get_sensitivities()` — Adjusts sensitivity multipliers (`0.5`–`2.0`) safely at runtime.
+- `.get_state(consume_triggers=False) -> dict` — Returns a thread-safe snapshot (pass `consume_triggers=True` to atomically consume edge-triggered `jump_triggered` and `wink_triggered` flags).
+
 #### `worker.get_state()` Return Schema
 | Key | Type | Range / Values | Description |
 | :--- | :--- | :--- | :--- |
-| `steer_x` | `float` | `-1.0` to `+1.0` | Smoothed horizontal steering (`-1.0` left, `+1.0` right). |
+| `steer_x` | `float` | `-1.0` to `+1.0` | One-Euro filtered horizontal steering with smooth `0.18` deadzone. |
 | `shape` | `str` | `"NORMAL"`, `"FLAT"`, `"NARROW"` | Hysteresis-debounced vehicle morph state. |
 | `face_detected` | `bool` | `True` / `False` | Whether a face was detected in the latest frame. |
 | `camera_available` | `bool` | `True` / `False` | Whether the webcam opened successfully. |
-| `smile_intensity` | `float` | `0.0` to `1.0` | Normalized smile strength (width expansion + corner lift). |
-| `open_intensity` | `float` | `0.0` to `1.0` | Normalized mouth opening strength (inner-lip MAR). |
-| `is_calibrating` | `bool` | `True` / `False` | `True` while collecting neutral baseline samples. |
+| `smile_intensity` | `float` | `0.0` to `1.0` | Normalized smile strength (width expansion + upper-lip corner lift). |
+| `open_intensity` | `float` | `0.0` to `1.0` | Multi-signal mouth opening strength (inner/outer lips, MAR, jaw drop, O-pucker). |
+| `brow_intensity` | `float` | `0.0` to `1.0` | Normalized eyebrow raise intensity. |
+| `jump_triggered` | `bool` | `True` / `False` | Edge-triggered eyebrow-raise jump event (cooldown `0.85` s). |
+| `wink_triggered` | `bool` | `True` / `False` | Edge-triggered asymmetric one-eye wink event (ignores two-eye blinks). |
+| `yaw_deg`, `pitch_deg`, `roll_deg` | `float` | `-75.0` to `+75.0` | One-Euro filtered 3D Euler angles from `cv2.solvePnP`. |
+| `is_calibrating` | `bool` | `True` / `False` | `True` while a calibration stage is collecting samples. |
+| `calibration_stage` | `str \| None` | `"NEUTRAL"`, `"SMILE"`, `"OPEN"`, `None` | Active step in the 3-step calibration wizard. |
 | `fps` | `float` | `>= 0.0` | Current vision pipeline frame rate. |
-| `pip_rgb_bytes` | `bytes \| None` | `PIP_WIDTH * PIP_HEIGHT * 3` | Annotated RGB frame bytes ready for `pygame.image.frombuffer(...)`. |
+| `pip_rgb_bytes` | `bytes \| None` | `PIP_WIDTH * PIP_HEIGHT * 3` | Annotated RGB frame bytes (with 3D axes & contours) for `pygame.image.frombuffer(...)`. |
 
 ---
 
-### 2. `SCRFDDetector` & `FaceMesh468` (Low-Level Frame Inference API)
-Use these directly to run face detection and 468-point landmark extraction on any OpenCV BGR image (`numpy.ndarray`) without threads or a webcam:
+### 2. `SCRFDDetector`, `FaceMesh468`, `HeadPose3D` & `OneEuroFilter` (Low-Level API)
+Use these directly to run face detection, 468-point landmarks, 3D `solvePnP` head pose, and One-Euro filtering on any OpenCV BGR image (`numpy.ndarray`) without threads or a webcam:
 
 ```python
 import cv2
 from game.expression_worker import SCRFDDetector, FaceMesh468
+from game.pose_3d import HeadPose3D
+from game.filters import OneEuroFilter
 
 detector = SCRFDDetector("Face_Pose/models/scrfd_500m_kps.onnx", conf_thresh=0.35, nms_thresh=0.45)
 mesh = FaceMesh468("Face_Pose/models/face_mesh.onnx")
+pose3d = HeadPose3D()
+yaw_filter = OneEuroFilter(min_cutoff=1.0, beta=0.05)
 
 img_bgr = cv2.imread("path/to/photo.jpg")
+h, w = img_bgr.shape[:2]
 
 # Stage 1: Detect faces -> bboxes: (N, 4) [x, y, w, h], kpss: (N, 5, 2)
 bboxes, kpss = detector.detect(img_bgr)
@@ -312,22 +339,24 @@ bboxes, kpss = detector.detect(img_bgr)
 if len(bboxes) > 0:
     # Stage 2: Extract 468 facial landmarks -> (468, 2) pixel coordinates
     landmarks_468 = mesh.predict(img_bgr, bboxes[0])
-    nose_tip = landmarks_468[1]
-    left_mouth_corner = landmarks_468[61]
-    right_mouth_corner = landmarks_468[291]
-    upper_inner_lip = landmarks_468[13]
-    lower_inner_lip = landmarks_468[14]
-    print("Nose tip:", nose_tip, "Lip gap (px):", abs(lower_inner_lip[1] - upper_inner_lip[1]))
+    # Stage 3: Solve 6-DOF 3D head pose -> (roll, yaw, pitch, rvec, tvec, cam_matrix)
+    pose = pose3d.estimate(landmarks_468, w, h)
+    if pose is not None:
+        roll_deg, yaw_deg, pitch_deg, rvec, tvec, cam_mat = pose
+        smooth_yaw = yaw_filter.filter(yaw_deg)
+        HeadPose3D.draw_axes(img_bgr, landmarks_468, rvec, tvec, cam_mat)
+        print(f"3D Pose -> Yaw: {smooth_yaw:+.1f}°, Pitch: {pitch_deg:+.1f}°, Roll: {roll_deg:+.1f}°")
 ```
 
 ---
 
 ### 3. Game Engine Components (`game.*`)
 If extending or customizing the game:
-- `game.car.Car`: `.set_target_steer(norm_x)`, `.set_shape(shape_key)`, `.update(road_renderer, dt)`, `.render(screen)`, `.get_hitbox() -> pygame.Rect`
-- `game.road.RoadRenderer`: `.update(speed, dt)`, `.render(screen)`, `.get_screen_coords(normalized_x, world_z) -> (screen_x, screen_y, scale)`
-- `game.obstacles.ObstacleManager`: `.update(speed, dt, car, sound_mgr) -> (points, collision)`, `.render(screen, road_renderer)`, `.reset()`
-- `game.sound_manager.SoundManager`: `.play(sound_name)` where `sound_name` is `"morph"`, `"clear"`, `"crash"`, or `"calibrated"`.
+- `game.car.Car`: `.set_target_steer(norm_x)`, `.set_shape(shape_key)`, `.trigger_jump() -> bool`, `.activate_shield(duration=3.5, cooldown=9.0) -> bool`, `.is_airborne`, `.is_shielded`, `.reset_abilities()`, `.update(road_renderer, dt)`, `.render(screen)`, `.get_hitbox() -> pygame.Rect`.
+- `game.road.RoadRenderer`: `.update(speed, dt, distance_meters=None) -> (biome_name, biome_changed)`, `.render(screen)`, `.get_screen_coords(normalized_x, world_z) -> (screen_x, screen_y, scale)`, `.get_current_biome_name()`, `.reset()`.
+- `game.obstacles.ObstacleManager`: `.update(speed, dt, car, sound_mgr, road_renderer=None) -> dict` (keys: `obstacles_passed`, `coins_collected`, `near_misses`, `shield_smashes`, `collision`, `gauntlet_started`, `coin_screen_positions`), `.render(screen, road_renderer)`, `.reset()`.
+- `game.sound_manager.SoundManager`: `.play(sound_name)` (`"morph"`, `"clear"`, `"coin"`, `"streak"`, `"near_miss"`, `"biome"`, `"crash"`, `"calibrated"`, `"jump"`, `"shield"`, `"smash"`), `.start_music()`, `.stop_music()`, `.toggle_music() -> bool`.
+- `game.storage`: `load_highscores()`, `save_highscore(score, distance, max_streak, coins=0)`, `load_settings()`, `save_settings(settings)`.
 
 ---
 
@@ -341,9 +370,8 @@ The standalone scripts (`Face_Pose/pose_detection_retinaface.py` and `Face_Pose/
 
 ## License & Acknowledgements
 
-- See [`Face_Pose/LICENSE.md`](Face_Pose/LICENSE.md) for the base `Face_Pose` license terms.
-- Face detection & landmark models:
-  - **SCRFD** (InsightFace)
-  - **MediaPipe 468-Point FaceMesh** (ONNX export)
-  - **RetinaFace MobileNetV2** (`peteryuX/retinaface-tf2`)
-  - **MTCNN** (`ipazc/mtcnn`)
+- **Source Code**: See [`Face_Pose/LICENSE.md`](Face_Pose/LICENSE.md) (MIT License) for the base `Face_Pose` scripts.
+- **Pretrained Model Weights Notice (Non-Commercial Research Terms)**:
+  - **SCRFD** (`Face_Pose/models/scrfd_*.onnx`, InsightFace): Pretrained weights are for **non-commercial research purposes only** unless licensed separately from InsightFace.
+  - **RetinaFace MobileNetV2** (`peteryuX/retinaface-tf2`) & **MTCNN** (`ipazc/mtcnn`): Trained on WIDER FACE / CelebA research datasets (non-commercial).
+  - **MediaPipe 468-Point FaceMesh** (`Face_Pose/models/face_mesh.onnx`): Community ONNX export; for commercial or web deployment, use Google's official Apache 2.0 `@mediapipe/tasks-vision` Face Landmarker bundle.
